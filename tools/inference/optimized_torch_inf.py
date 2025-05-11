@@ -20,6 +20,37 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 from engine.core import YAMLConfig
 
 
+def get_image_Id(img_name_stem):
+    """
+    Generates an image ID based on the filename stem.
+    Filename stem is expected to be in the format 'cameraX_SCENE_FRAME'.
+    Example: 'camera0_M_123'
+    """
+    sceneList = ['M', 'A', 'E', 'N']
+    try:
+        parts = img_name_stem.split('_')
+        if len(parts) < 3:
+            raise ValueError(f"Filename stem '{img_name_stem}' does not have at least 3 parts separated by '_' (e.g., cameraX_SCENE_FRAME).")
+
+        camera_part = parts[0]
+        if not camera_part.startswith("camera") or len(camera_part) <= len("camera"):
+            raise ValueError(f"Camera part '{camera_part}' in '{img_name_stem}' is not in 'cameraX' format.")
+        cameraIndx = int(camera_part[len("camera"):])
+
+        scene_part = parts[1]
+        sceneIndx = sceneList.index(scene_part) # Raises ValueError if scene_part not in sceneList
+
+        frame_part = parts[2]
+        frameIndx = int(frame_part) # Raises ValueError if frame_part is not a valid integer
+
+        imageId = int(str(cameraIndx) + str(sceneIndx) + str(frameIndx))
+    except ValueError as e:
+        raise ValueError(f"Error parsing ID from filename stem '{img_name_stem}': {e}") from e
+    except IndexError as e: # Should be caught by len(parts) check, but good for safety
+        raise ValueError(f"Error parsing ID from filename stem '{img_name_stem}' due to unexpected format (IndexError): {e}") from e
+    return imageId
+
+
 class CocoImageDataset(torch.utils.data.Dataset):
     def __init__(self, image_files_list, transforms):
         self.image_files = image_files_list
@@ -30,33 +61,40 @@ class CocoImageDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
-        coco_image_id = idx + 1  # 1-based ID
+        img_filename_with_ext = os.path.basename(image_path)
+        img_filename_stem, _ = os.path.splitext(img_filename_with_ext)
 
         try:
+            # Attempt to generate ID first using the provided function
+            try:
+                coco_image_id = get_image_Id(img_filename_stem)
+            except ValueError as e_id: # Catch specific errors from get_image_Id
+                # Re-raise to be caught by the outer exception handler, adding context
+                raise ValueError(f"ID generation failed for '{img_filename_with_ext}' (stem: '{img_filename_stem}'): {e_id}") from e_id
+
             im_pil = Image.open(image_path).convert('RGB')
             original_width, original_height = im_pil.size
             im_data = self.transforms(im_pil)
-            img_filename = os.path.basename(image_path)
 
             return {
                 "im_data": im_data,
                 "original_size_for_model": torch.tensor([original_width, original_height], dtype=torch.float32),  # W, H
-                "coco_image_id": coco_image_id,
+                "coco_image_id": coco_image_id, # Use new ID
                 "original_width": original_width,
                 "original_height": original_height,
-                "file_name": img_filename,
+                "file_name": img_filename_with_ext,
                 "status": "ok"
             }
         except Exception as e:
-            print(f"Error loading image {image_path}: {e}", file=sys.stderr)
+            print(f"Error processing image {image_path} (or its ID): {e}", file=sys.stderr)
             # Return a dummy item or skip, here returning status to filter later
             return {
                 "im_data": torch.zeros((3, 640, 640)), # Dummy data
                 "original_size_for_model": torch.tensor([0,0], dtype=torch.float32),
-                "coco_image_id": coco_image_id, # Still need an ID for placeholders
+                "coco_image_id": idx + 1, # Fallback ID for error item (won't be used if filtered)
                 "original_width": 0,
                 "original_height": 0,
-                "file_name": os.path.basename(image_path),
+                "file_name": img_filename_with_ext,
                 "status": "error"
             }
 
@@ -88,26 +126,10 @@ def coco_collate_fn_revised(batch):
 
 def process_directory_to_coco(model, device, input_dir, output_json, conf_threshold=0.4, batch_size=8, num_workers=4):
     """
-    Process all images in a directory and output results in COCO format
+    Process all images in a directory and output results in the specified JSON list format.
     """
-    coco_output = {
-        "info": {
-            "description": "COCO format results from D-FINE model",
-            "url": "",
-            "version": "1.0",
-            "year": datetime.datetime.now().year,
-            "contributor": "",
-            "date_created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        },
-        "licenses": [],
-        "images": [],
-        "annotations": [],
-        "categories": []
-    }
-    
-    category_mapping = {}
-    annotation_id_counter = 1
-    
+    all_detections_list = [] # Initialize an empty list for the output
+
     image_files = sorted(glob.glob(os.path.join(input_dir, "*.jpg")) + \
                          glob.glob(os.path.join(input_dir, "*.jpeg")) + \
                          glob.glob(os.path.join(input_dir, "*.png")) + \
@@ -115,10 +137,10 @@ def process_directory_to_coco(model, device, input_dir, output_json, conf_thresh
     
     if not image_files:
         print("No images found in the directory.")
-        # Save empty COCO JSON
+        # Save empty JSON list
         with open(output_json, 'w') as f:
-            json.dump(coco_output, f, indent=2)
-        print(f"Empty COCO format results saved to {output_json}")
+            json.dump(all_detections_list, f, indent=2) # Save empty list
+        print(f"Empty results list saved to {output_json}")
         return
 
     transforms_val = T.Compose([
@@ -136,20 +158,18 @@ def process_directory_to_coco(model, device, input_dir, output_json, conf_thresh
         pin_memory=True if device != 'cpu' else False
     )
     
-    print(f"Found {len(image_files)} images to process")
+    print(f"Found {len(image_files)} images to process for detection output.")
     start_time = datetime.datetime.now()
     
     processed_image_count = 0
+    total_detections_count = 0
+
     with torch.no_grad():
         for batch_data in dataloader:
             if batch_data.get("empty_batch", False) or batch_data["im_data_batch"].numel() == 0:
-                # This can happen if all images in a batch failed to load
-                # Or if dataset itself becomes empty after filtering bad images (not handled by this check)
-                num_failed_in_batch = batch_size # Assuming worst case, or sum items with status "error" if not pre-filtered
+                num_failed_in_batch = batch_size
                 print(f"Skipping an empty or failed batch of approx {num_failed_in_batch} images.", file=sys.stderr)
-                # Need to adjust processed_image_count if we want total attempted vs successful
                 continue
-
 
             im_data_batch = batch_data['im_data_batch'].to(device)
             orig_sizes_batch = batch_data['original_sizes_for_model'].to(device)
@@ -159,17 +179,10 @@ def process_directory_to_coco(model, device, input_dir, output_json, conf_thresh
             
             for i in range(len(batch_data['coco_image_ids'])):
                 processed_image_count += 1
-                coco_image_id = batch_data['coco_image_ids'][i]
-                original_width = batch_data['original_widths'][i]
-                original_height = batch_data['original_heights'][i]
-                file_name = batch_data['file_names'][i]
-
-                coco_output["images"].append({
-                    "id": coco_image_id,
-                    "width": original_width,
-                    "height": original_height,
-                    "file_name": file_name,
-                })
+                current_image_id = batch_data['coco_image_ids'][i]
+                # original_width = batch_data['original_widths'][i] # Not needed for this output format directly
+                # original_height = batch_data['original_heights'][i] # Not needed for this output format directly
+                # file_name = batch_data['file_names'][i] # Not needed for this output format directly
                 
                 labels = labels_batch[i].detach()
                 boxes = boxes_batch[i].detach()
@@ -181,44 +194,31 @@ def process_directory_to_coco(model, device, input_dir, output_json, conf_thresh
                 filtered_scores = scores[mask].cpu().numpy()
                 
                 for k_detection in range(len(filtered_labels)):
-                    label_id = int(filtered_labels[k_detection])
-                    
-                    if label_id not in category_mapping:
-                        category_mapping[label_id] = {
-                            "id": label_id,
-                            "name": f"class_{label_id}",
-                            "supercategory": "none"
-                        }
+                    category_id = int(filtered_labels[k_detection])
                     
                     x1, y1, x2, y2 = filtered_boxes[k_detection]
                     width = x2 - x1
                     height = y2 - y1
                     
-                    coco_output["annotations"].append({
-                        "id": annotation_id_counter,
-                        "image_id": coco_image_id,
-                        "category_id": label_id,
+                    detection_entry = {
+                        "image_id": current_image_id,
+                        "category_id": category_id,
                         "bbox": [float(x1), float(y1), float(width), float(height)],
-                        "area": float(width * height),
-                        "iscrowd": 0,
                         "score": float(filtered_scores[k_detection])
-                    })
-                    annotation_id_counter += 1
+                    }
+                    all_detections_list.append(detection_entry)
+                    total_detections_count +=1
     
     end_time = datetime.datetime.now()
     elapsed_time = (end_time - start_time).total_seconds()
     
-    # Sort images by ID for consistency, though shuffle=False should maintain order
-    coco_output["images"].sort(key=lambda x: x["id"])
-
-    for cat_id, cat_info in category_mapping.items():
-        coco_output["categories"].append(cat_info)
+    # The new format is a flat list, so no complex structure to build or sort here.
     
     with open(output_json, 'w') as f:
-        json.dump(coco_output, f, indent=2)
+        json.dump(all_detections_list, f, indent=2)
     
-    print(f"COCO format results saved to {output_json}")
-    print(f"Successfully processed {processed_image_count} images with {annotation_id_counter-1} total detections.")
+    print(f"Detection results list saved to {output_json}")
+    print(f"Successfully processed {processed_image_count} images, yielding {total_detections_count} total detections.")
     if processed_image_count < len(image_files):
         print(f"Warning: {len(image_files) - processed_image_count} images could not be processed.")
 
