@@ -13,7 +13,7 @@ pip install ultralytics tqdm
 ### Basic Usage
 
 ```bash
-python yolo_inference_script.py --test_folder /path/to/test/images --model best.pt
+python inference.py --test_folder /path/to/test/images --model best.pt
 ```
 
 This will run inference on all images in the test folder using the default confidence threshold of 0.25 for all classes and save the results to `detections.json`.
@@ -23,7 +23,7 @@ This will run inference on all images in the test folder using the default confi
 To set different confidence thresholds for each class:
 
 ```bash
-python yolo_inference_script.py --test_folder /path/to/test/images --model best.pt --conf "0.1,0.2,0.3,0.4,0.5"
+python inference.py --test_folder /path/to/test/images --model best.pt --conf "0.1,0.2,0.3,0.4,0.5"
 ```
 
 This sets:
@@ -36,7 +36,7 @@ This sets:
 ### All Options
 
 ```bash
-python yolo_inference_script.py --test_folder /path/to/test/images --model best.pt --output custom_output.json --conf "0.1,0.2,0.3,0.4,0.5"
+python inference.py --test_folder /path/to/test/images --model best.pt --output custom_output.json --conf "0.1,0.2,0.3,0.4,0.5"
 ```
 
 ## Parameters
