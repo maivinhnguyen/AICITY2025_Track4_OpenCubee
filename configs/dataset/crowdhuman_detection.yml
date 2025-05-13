@@ -4,15 +4,15 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-num_classes: 2 # your dataset classes
+num_classes: 1 # your dataset classes
 remap_mscoco_category: False
 
 train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /datassd/coco/crowd_human_coco/CrowdHuman_train
-    ann_file: /datassd/coco/crowd_human_coco/Chuman-train.json
+    img_folder: /data/CrowdHuman/coco/CrowdHuman_train
+    ann_file: /data/CrowdHuman/coco/Chuman-train.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /datassd/coco/crowd_human_coco/CrowdHuman_val
-    ann_file: /datassd/coco/crowd_human_coco/Chuman-val.json
+    img_folder: /data/CrowdHuman/coco/CrowdHuman_val
+    ann_file: /data/CrowdHuman/coco/Chuman-val.json
     return_masks: False
     transforms:
       type: Compose

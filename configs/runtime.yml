@@ -18,3 +18,7 @@ ema:
   type: ModelEMA
   decay: 0.9999
   warmups: 1000
+
+use_wandb: False
+project_name: D-FINE # for wandb
+exp_name: baseline # wandb experiment name

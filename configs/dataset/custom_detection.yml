@@ -4,15 +4,15 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-num_classes: 10 # your dataset classes
+num_classes: 5 # your dataset classes
 remap_mscoco_category: False
 
 train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /kaggle/input/visdrone-dataset/VisDrone2019-DET-train/VisDrone2019-DET-train/images
-    ann_file: /kaggle/working/visdrone_coco_output/visdrone_train_coco.json
+    img_folder: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/train/images
+    ann_file: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/train/train.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /kaggle/input/visdrone-dataset/VisDrone2019-DET-val/VisDrone2019-DET-val/images
-    ann_file: /kaggle/working/visdrone_coco_output/visdrone_val_coco.json
+    img_folder: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/val/images
+    ann_file: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/val/val.json
     return_masks: False
     transforms:
       type: Compose
