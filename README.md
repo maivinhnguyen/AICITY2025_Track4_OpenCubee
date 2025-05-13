@@ -699,12 +699,18 @@ Thanks to the inspirations from [RT-DETR](https://github.com/lyuwenyu/RT-DETR), 
 
 ✨ Feel free to contribute and reach out if you have any questions! ✨
 
+## CÁCH EVAL AE:
+
+Ae infer bằng code (cd vào Repos/maibel/D-FINE và sửa lại các path cho đúng):
+```python
+python tools/inference/optimized_torch_inf.py -c  configs/dfine/custom/objects365/dfine_hgnetv2_s_obj2custom.yml -d 'cuda:<GPU nào (vd: 5)>' --input /workspace/datasets/Fisheye8K_all_including_train\&test/test/images -r output/dfine_hgnetv2_s_coco/last.pth --thresholds "0.426,0.528,0.517,0.348,0.449"  --output test_pred_best.json --batch_size 16 \
+# --batch_size 1 nếu muốn test FPS real-time
+```
+
+Ae inference để confidence threshold = 0.01, xong eval bằng code bên dưới:
 ```python
 python tools/inference/coco_eval.py --gt_js
 on /workspace/datasets/Fisheye8K_all_including_train\&test/test/test.json --pred_json test_pred.json
  --output_dir eval_results
 ```
 
-```python
-python tools/inference/optimized_torch_inf.py -c  configs/dfine/custom/objects365/dfine_hgnetv2_s_obj2custom.yml -d 'cuda:5' --input /workspace/datasets/Fisheye8K_all_including_train\&test/test/images -r output/dfine_hgnetv2_s_coco/last.pth --thresholds "0.426,0.528,0.517,0.348,0.449"  --output test_pred_best.json --batch_size 16
-```
