@@ -48,16 +48,20 @@ optimizer:
   weight_decay: 0.000125
 
 
-epochs: 36 # Early stop
+epochs: 64 # Early stop
 train_dataloader:
   dataset:
     transforms:
       policy:
-        epoch: 500
+        epoch: 56
   collate_fn:
-    stop_epoch: 500
-    base_size_repeat: 20
+    stop_epoch: 56
+    ema_restart_decay: 0.9999
+    base_size_repeat: 10
 
-checkpoint_freq: 1
-print_freq: 1000
+ema:
+  warmups: 0
+
+lr_warmup_scheduler:
+  warmup_duration: 0
 
