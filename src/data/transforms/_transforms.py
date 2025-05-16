@@ -162,91 +162,196 @@ class ConvertPILImage(T.Transform):
         return inpt
 
 @register()
-class FilterSmallInstances(T.Transform):
-    _transformed_types = (BoundingBoxes, Mask)
+class RandomRotate90(T.Transform):
+    """
+    Randomly rotates the input by 0, 90, 180, or 270 degrees counter-clockwise.
+    The rotation is applied with a probability `p`. If applied, one of
+    90, 180, or 270 degrees is chosen uniformly.
+    """
+    _transformed_types = (Image, Video, Mask, BoundingBoxes)
 
-    def __init__(self, min_pixels: int = 9, min_visibility: float = 0.2):
+    def __init__(self, p: float = 0.5):
         super().__init__()
-        self.min_pixels = min_pixels
-        self.min_visibility = min_visibility
+        if not (0.0 <= p <= 1.0):
+            raise ValueError(f"Probability p must be between 0 and 1, got {p}")
+        self.p = p
+
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        if torch.rand(1).item() < self.p:
+            # Choose a random k from {1, 2, 3} for 90, 180, 270 deg CCW rotation
+            k = torch.randint(1, 4, (1,)).item()
+            angle = float(k * 90)
+        else:
+            angle = 0.0  # No rotation
+        
+        # expand=True is needed for 90/270 deg rotations if H != W to prevent cropping
+        # F.rotate handles this correctly for BoundingBoxes too.
+        expand = abs(angle % 180) == 90.0
+        return dict(angle=angle, expand=expand)
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        boxes = inpt['boxes']
-        masks = inpt.get('masks', None)
-
-        keep = []
-        for i in range(boxes.shape[0]):
-            box = boxes[i]
-            area = (box[2] - box[0]) * (box[3] - box[1])
-            if area < self.min_pixels:
-                continue
-
-            if masks is not None:
-                mask = masks[i]
-                # Make sure mask shape is (H, W)
-                if mask.ndim == 3 and mask.shape[0] == 1:
-                    mask = mask.squeeze(0)  # remove channel dim if present
-
-                visible = mask.sum().item() / (mask.numel())
-                if visible < self.min_visibility:
-                    continue
-
-            keep.append(i)
-
-        # Apply filtering to all tensor entries:
-        for key in inpt:
-            if isinstance(inpt[key], torch.Tensor):
-                inpt[key] = inpt[key][keep]
-
-        return inpt
+        angle = params["angle"]
+        if angle == 0.0:
+            return inpt
+        
+        return F.rotate(inpt, angle=angle, expand=params["expand"], interpolation=F.InterpolationMode.NEAREST)
 
 
 @register()
 class RandomPatchGaussian(T.Transform):
-    _transformed_types = (Image,)
+    """
+    Applies Gaussian noise to a randomly selected patch of the image.
+    Operates on Image and Video tv_tensors.
+    Assumes input tensor is float and in [0, 1] range.
+    """
+    _transformed_types = (Image, Video)
 
-    def __init__(self, p=0.3):
+    def __init__(
+        self,
+        p: float = 0.5,
+        patch_size_ratio_min: float = 0.1,
+        patch_size_ratio_max: float = 0.5,
+        sigma_min: float = 0.01,
+        sigma_max: float = 0.1,
+    ):
         super().__init__()
+        if not (0.0 <= p <= 1.0):
+            raise ValueError(f"Probability p must be between 0 and 1, got {p}")
         self.p = p
+        if not (0 < patch_size_ratio_min <= patch_size_ratio_max <= 1.0):
+            raise ValueError("Invalid patch_size_ratio values.")
+        if not (0 < sigma_min <= sigma_max):
+            raise ValueError("Invalid sigma values.")
+            
+        self.patch_size_ratio_min = patch_size_ratio_min
+        self.patch_size_ratio_max = patch_size_ratio_max
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return self._transform(inpt, params)
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        if torch.rand(1).item() >= self.p:
+            return dict(apply_noise=False)
+
+        # Find the first image-like input to get spatial size
+        img_inpt = None
+        for x in flat_inputs:
+            if isinstance(x, (Image, Video)):
+                img_inpt = x
+                break
+        if img_inpt is None: # Should not happen if used correctly
+            return dict(apply_noise=False)
+
+        _, h, w = F.get_dimensions(img_inpt) # C, H, W or T, C, H, W
+
+        patch_h_ratio = torch.rand(1).item() * (self.patch_size_ratio_max - self.patch_size_ratio_min) + self.patch_size_ratio_min
+        patch_w_ratio = torch.rand(1).item() * (self.patch_size_ratio_max - self.patch_size_ratio_min) + self.patch_size_ratio_min
+        
+        ph = max(1, int(h * patch_h_ratio))
+        pw = max(1, int(w * patch_w_ratio))
+
+        y1 = torch.randint(0, h - ph + 1, (1,)).item() if h > ph else 0
+        x1 = torch.randint(0, w - pw + 1, (1,)).item() if w > pw else 0
+        
+        sigma = torch.rand(1).item() * (self.sigma_max - self.sigma_min) + self.sigma_min
+        
+        return dict(apply_noise=True, y1=y1, x1=x1, ph=ph, pw=pw, sigma=sigma)
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        if torch.rand(1) >= self.p:
+        if not params["apply_noise"] or not isinstance(inpt, (Image, Video)):
             return inpt
 
-        c, h, w = inpt.shape
-        patch_h = torch.randint(h // 8, h // 4, (1,)).item()
-        patch_w = torch.randint(w // 8, w // 4, (1,)).item()
-        top = torch.randint(0, h - patch_h, (1,)).item()
-        left = torch.randint(0, w - patch_w, (1,)).item()
+        # Ensure input is float. If not, this transform might behave unexpectedly.
+        # Typically, images are converted to float and scaled to [0,1] before this.
+        if not inpt.is_floating_point():
+            # print("Warning: RandomPatchGaussian received non-float input. Noise might be miscaled.")
+            # For robustness, could convert, apply, then convert back, but that's slow.
+            # Best to ensure pipeline prepares data correctly.
+            pass # Proceed, assuming user knows what they're doing or data is already fine.
 
-        patch = inpt[:, top:top + patch_h, left:left + patch_w]
-        noise = torch.randn_like(patch) * 0.2
-        inpt[:, top:top + patch_h, left:left + patch_w] = patch + noise
+        out_tensor = inpt.as_subclass(torch.Tensor).clone()
+        
+        y1, x1 = params["y1"], params["x1"]
+        ph, pw = params["ph"], params["pw"]
+        sigma = params["sigma"]
 
-        return inpt
+        patch = out_tensor[..., y1 : y1 + ph, x1 : x1 + pw]
+        noise = torch.randn_like(patch) * sigma
+        noisy_patch = torch.clamp(patch + noise, 0.0, 1.0) # Clamp to [0,1]
+        
+        out_tensor[..., y1 : y1 + ph, x1 : x1 + pw] = noisy_patch
+        
+        return type(inpt)(out_tensor)
 
 
 @register()
-class RandomRotate90(T.Transform):
-    _transformed_types = (Image, Mask, BoundingBoxes)
+class FilterSmallInstances(T.Transform):
+    """
+    Filters out instances (BoundingBoxes or Masks) that are smaller than a threshold.
+    - For BoundingBoxes: filters based on pixel area (width * height).
+    - For Masks: filters based on the sum of non-zero pixels in the mask.
+    
+    Note: This transform operates on BoundingBoxes or Mask tv_tensors directly.
+    If these are part of a target dictionary (e.g. {'boxes': ..., 'labels': ...}),
+    this transform will filter the 'boxes' or 'masks' entry, but will NOT
+    synchronize filtering for other keys like 'labels' in the same dictionary.
+    A custom `forward` method or a subsequent synchronization step would be
+    needed for dictionary-level filtering.
 
-    def __init__(self, p=0.2):
+    The `min_visibility` parameter is included but its common interpretation
+    (fraction of original area after cropping) doesn't directly apply here.
+    It's largely unused unless a specific interpretation for non-cropping
+    scenarios is defined (e.g., relative to image size).
+    """
+    _transformed_types = (BoundingBoxes, Mask)
+
+    def __init__(self, min_pixels: int = 9, min_visibility: float = 0.2):
         super().__init__()
-        self.p = p
-        self.k = None
+        if min_pixels < 0:
+            raise ValueError(f"min_pixels must be non-negative, got {min_pixels}")
+        if not (0.0 <= min_visibility <= 1.0):
+             raise ValueError(f"min_visibility must be between 0 and 1, got {min_visibility}")
+        self.min_pixels = min_pixels
+        self.min_visibility = min_visibility # See class docstring for notes on this param
 
-    def _get_params(self, flat_inputs):
-        if torch.rand(1) < self.p:
-            self.k = torch.randint(1, 4, (1,)).item()
-        else:
-            self.k = 0
-        return {"k": self.k}
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        if isinstance(inpt, BoundingBoxes):
+            if not inpt.numel() or inpt.shape[0] == 0: # No boxes
+                return inpt
+            
+            # Assuming XYXY format for BoundingBoxes tv_tensor
+            widths = inpt[:, 2] - inpt[:, 0]
+            heights = inpt[:, 3] - inpt[:, 1]
+            areas = widths * heights
+            
+            keep = areas >= self.min_pixels
 
-    def _transform(self, inpt, params):
-        k = params["k"]
-        if k == 0:
-            return inpt
-        return F.rotate(inpt, angle=90 * k, expand=False)
+            # Example of how min_visibility *could* be used if defined as fraction of image area:
+            # if self.min_visibility > 0 and inpt.spatial_size[0] * inpt.spatial_size[1] > 0:
+            #     img_area = inpt.spatial_size[0] * inpt.spatial_size[1]
+            #     visibility_as_img_fraction = areas / img_area
+            #     keep = keep & (visibility_as_img_fraction >= self.min_visibility)
+
+            filtered_data = inpt.as_subclass(torch.Tensor)[keep]
+            return BoundingBoxes(filtered_data, format=inpt.format, spatial_size=inpt.spatial_size, dtype=inpt.dtype, device=inpt.device)
+
+        elif isinstance(inpt, Mask): # Assuming Mask is (N, H, W) or (H,W) or (1,H,W)
+            # If Mask is single (H,W) or (1,H,W), treat as one instance
+            mask_tensor = inpt.as_subclass(torch.Tensor)
+            if mask_tensor.ndim == 2: # (H,W)
+                mask_tensor = mask_tensor.unsqueeze(0) # (1,H,W)
+            
+            if not mask_tensor.numel() or mask_tensor.shape[0] == 0: # No masks
+                return inpt
+            if mask_tensor.ndim < 3: # Should be at least (N,H,W) or (C,H,W)
+                return inpt # Not instance masks or unexpected format
+
+            # Sum over spatial dimensions (H, W) for each instance mask
+            areas = mask_tensor.sum(dim=(-2, -1)) 
+            keep = areas >= self.min_pixels
+            
+            filtered_tensor = mask_tensor[keep]
+            # If original was (H,W) and it's kept, restore shape if needed,
+            # but generally, if it's filtered, it implies multiple instances.
+            return Mask(filtered_tensor)
+            
+        return inpt # Should not be reached due to _transformed_types
