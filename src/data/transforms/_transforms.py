@@ -12,6 +12,9 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
+import random
+import math
+import numpy as np
 
 from ...core import register
 from .._misc import (
@@ -163,194 +166,195 @@ class ConvertPILImage(T.Transform):
 
 @register()
 class RandomRotate90(T.Transform):
+    """Rotate the image by 90 degrees with the specified probability.
+    Useful for fisheye datasets where orientation can vary.
     """
-    Randomly rotates the input by 0, 90, 180, or 270 degrees counter-clockwise.
-    The rotation is applied with a probability `p`. If applied, one of
-    90, 180, or 270 degrees is chosen uniformly.
-    """
-    _transformed_types = (Image, Video, Mask, BoundingBoxes)
+    _transformed_types = (
+        PIL.Image.Image,
+        Image,
+        Video,
+        Mask,
+        BoundingBoxes,
+    )
 
-    def __init__(self, p: float = 0.5):
+    def __init__(self, p: float = 0.5) -> None:
         super().__init__()
-        if not (0.0 <= p <= 1.0):
-            raise ValueError(f"Probability p must be between 0 and 1, got {p}")
         self.p = p
 
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        if torch.rand(1).item() < self.p:
-            # Choose a random k from {1, 2, 3} for 90, 180, 270 deg CCW rotation
-            k = torch.randint(1, 4, (1,)).item()
-            angle = float(k * 90)
-        else:
-            angle = 0.0  # No rotation
-        
-        # expand=True is needed for 90/270 deg rotations if H != W to prevent cropping
-        # F.rotate handles this correctly for BoundingBoxes too.
-        expand = abs(angle % 180) == 90.0
-        return dict(angle=angle, expand=expand)
+        # 0: no rotation, 1: 90 degrees, 2: 180 degrees, 3: 270 degrees
+        k = random.randint(0, 3) if torch.rand(1) < self.p else 0
+        return {"k": k}
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        angle = params["angle"]
-        if angle == 0.0:
+        k = params["k"]
+        if k == 0:
             return inpt
         
-        return F.rotate(inpt, angle=angle, expand=params["expand"], interpolation=F.InterpolationMode.NEAREST)
+        if isinstance(inpt, BoundingBoxes):
+            # For bounding boxes, we need to handle the rotation specially
+            boxes = inpt.as_tensor()
+            format = inpt.format.value.lower()
+            spatial_size = getattr(inpt, _boxes_keys[1])
+            h, w = spatial_size
+            
+            # Convert to xyxy format for easier rotation
+            if format != "xyxy":
+                boxes = torchvision.ops.box_convert(boxes, in_fmt=format, out_fmt="xyxy")
+            
+            # Rotate the boxes
+            for _ in range(k):
+                # For 90 degree rotation: (x, y) -> (y, w-x)
+                boxes_new = boxes.clone()
+                boxes_new[:, 0] = h - boxes[:, 3]  # new_x1 = h - y2
+                boxes_new[:, 1] = boxes[:, 0]      # new_y1 = x1
+                boxes_new[:, 2] = h - boxes[:, 1]  # new_x2 = h - y1
+                boxes_new[:, 3] = boxes[:, 2]      # new_y2 = x2
+                boxes = boxes_new
+                # Swap height and width
+                h, w = w, h
+            
+            # Convert back to original format if needed
+            if format != "xyxy":
+                boxes = torchvision.ops.box_convert(boxes, in_fmt="xyxy", out_fmt=format)
+            
+            # Create new BoundingBoxes object with rotated boxes
+            return convert_to_tv_tensor(
+                boxes, key="boxes", box_format=inpt.format, spatial_size=(h, w)
+            )
+        
+        # For images, masks, etc.
+        return F.rotate(inpt, 90 * k)
 
 
 @register()
 class RandomPatchGaussian(T.Transform):
+    """Add random Gaussian noise patches to enhance detection of small objects.
+    This helps the model learn to identify objects in noisy areas.
     """
-    Applies Gaussian noise to a randomly selected patch of the image.
-    Operates on Image and Video tv_tensors.
-    Assumes input tensor is float and in [0, 1] range.
-    """
-    _transformed_types = (Image, Video)
+    _transformed_types = (PIL.Image.Image, Image)
 
     def __init__(
         self,
         p: float = 0.5,
-        patch_size_ratio_min: float = 0.1,
-        patch_size_ratio_max: float = 0.5,
-        sigma_min: float = 0.01,
-        sigma_max: float = 0.1,
-    ):
+        num_patches: int = 5,
+        patch_size_range: List[float] = [0.01, 0.05],
+        mean: float = 0.0,
+        std: float = 0.2
+    ) -> None:
         super().__init__()
-        if not (0.0 <= p <= 1.0):
-            raise ValueError(f"Probability p must be between 0 and 1, got {p}")
         self.p = p
-        if not (0 < patch_size_ratio_min <= patch_size_ratio_max <= 1.0):
-            raise ValueError("Invalid patch_size_ratio values.")
-        if not (0 < sigma_min <= sigma_max):
-            raise ValueError("Invalid sigma values.")
-            
-        self.patch_size_ratio_min = patch_size_ratio_min
-        self.patch_size_ratio_max = patch_size_ratio_max
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
+        self.num_patches = num_patches
+        self.patch_size_range = patch_size_range
+        self.mean = mean
+        self.std = std
 
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
-        if torch.rand(1).item() >= self.p:
-            return dict(apply_noise=False)
-
-        # Find the first image-like input to get spatial size
-        img_inpt = None
-        for x in flat_inputs:
-            if isinstance(x, (Image, Video)):
-                img_inpt = x
-                break
-        if img_inpt is None: # Should not happen if used correctly
-            return dict(apply_noise=False)
-
-        _, h, w = F.get_dimensions(img_inpt) # C, H, W or T, C, H, W
-
-        patch_h_ratio = torch.rand(1).item() * (self.patch_size_ratio_max - self.patch_size_ratio_min) + self.patch_size_ratio_min
-        patch_w_ratio = torch.rand(1).item() * (self.patch_size_ratio_max - self.patch_size_ratio_min) + self.patch_size_ratio_min
-        
-        ph = max(1, int(h * patch_h_ratio))
-        pw = max(1, int(w * patch_w_ratio))
-
-        y1 = torch.randint(0, h - ph + 1, (1,)).item() if h > ph else 0
-        x1 = torch.randint(0, w - pw + 1, (1,)).item() if w > pw else 0
-        
-        sigma = torch.rand(1).item() * (self.sigma_max - self.sigma_min) + self.sigma_min
-        
-        return dict(apply_noise=True, y1=y1, x1=x1, ph=ph, pw=pw, sigma=sigma)
+        apply = torch.rand(1) < self.p
+        return {"apply": apply}
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        if not params["apply_noise"] or not isinstance(inpt, (Image, Video)):
+        if not params["apply"]:
             return inpt
-
-        # Ensure input is float. If not, this transform might behave unexpectedly.
-        # Typically, images are converted to float and scaled to [0,1] before this.
-        if not inpt.is_floating_point():
-            # print("Warning: RandomPatchGaussian received non-float input. Noise might be miscaled.")
-            # For robustness, could convert, apply, then convert back, but that's slow.
-            # Best to ensure pipeline prepares data correctly.
-            pass # Proceed, assuming user knows what they're doing or data is already fine.
-
-        out_tensor = inpt.as_subclass(torch.Tensor).clone()
         
-        y1, x1 = params["y1"], params["x1"]
-        ph, pw = params["ph"], params["pw"]
-        sigma = params["sigma"]
-
-        patch = out_tensor[..., y1 : y1 + ph, x1 : x1 + pw]
-        noise = torch.randn_like(patch) * sigma
-        noisy_patch = torch.clamp(patch + noise, 0.0, 1.0) # Clamp to [0,1]
+        # Convert PIL image to tensor if needed
+        is_pil = isinstance(inpt, PIL.Image.Image)
+        if is_pil:
+            img_tensor = F.pil_to_tensor(inpt).float()
+            if img_tensor.max() <= 1.0:
+                img_tensor = img_tensor * 255.0
+        else:
+            img_tensor = inpt.as_tensor().clone()
+            if img_tensor.max() <= 1.0:
+                img_tensor = img_tensor * 255.0
         
-        out_tensor[..., y1 : y1 + ph, x1 : x1 + pw] = noisy_patch
+        c, h, w = img_tensor.shape
         
-        return type(inpt)(out_tensor)
+        # Add random Gaussian patches
+        for _ in range(self.num_patches):
+            # Random patch size
+            rel_size = random.uniform(self.patch_size_range[0], self.patch_size_range[1])
+            patch_h = max(1, int(h * rel_size))
+            patch_w = max(1, int(w * rel_size))
+            
+            # Random position
+            x = random.randint(0, w - patch_w)
+            y = random.randint(0, h - patch_h)
+            
+            # Create Gaussian noise
+            noise = torch.randn(c, patch_h, patch_w) * (self.std * 255.0) + (self.mean * 255.0)
+            
+            # Apply the noise patch
+            img_tensor[:, y:y+patch_h, x:x+patch_w] += noise
+        
+        # Clip values to valid range
+        img_tensor = torch.clamp(img_tensor, 0.0, 255.0)
+        
+        # Convert back to original format
+        if is_pil:
+            img_tensor = img_tensor.to(torch.uint8)
+            return F.to_pil_image(img_tensor)
+        else:
+            if inpt.as_tensor().max() <= 1.0:
+                img_tensor = img_tensor / 255.0
+            return Image(img_tensor)
 
 
 @register()
 class FilterSmallInstances(T.Transform):
-    _transformed_types = (BoundingBoxes, Mask) # Assuming BoundingBoxes is from .._misc
+    """Filter out small instances that may be hard to detect or irrelevant.
+    This helps in focusing model training on meaningful objects.
+    """
+    _transformed_types = (BoundingBoxes,)
 
-    def __init__(self, min_pixels: int = 9, min_visibility: float = 0.2):
+    def __init__(
+        self,
+        min_pixels: int = 9,
+        min_visibility: float = 0.2,
+    ) -> None:
         super().__init__()
-        # ... (init checks) ...
         self.min_pixels = min_pixels
         self.min_visibility = min_visibility
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        if isinstance(inpt, BoundingBoxes):
-            if not inpt.numel() or inpt.shape[0] == 0:
-                return inpt
+        boxes = inpt.as_tensor()
+        if boxes.shape[0] == 0:
+            return inpt
+        
+        format = inpt.format.value.lower()
+        spatial_size = getattr(inpt, _boxes_keys[1])
             
-            # --- Start Defensive Checks ---
-            if not hasattr(inpt, 'spatial_size') or inpt.spatial_size is None:
-                raise AttributeError(
-                    f"Input BoundingBoxes (type: {type(inpt)}) to FilterSmallInstances is missing 'spatial_size'. "
-                    "This attribute is essential. Check the preceding transform in your pipeline "
-                    "(likely SanitizeBoundingBoxes or a geometric transform like Resize) to ensure it correctly "
-                    "sets or propagates 'spatial_size' on the BoundingBoxes objects it outputs."
-                )
-            if not hasattr(inpt, 'format') or inpt.format is None:
-                raise AttributeError(
-                    f"Input BoundingBoxes (type: {type(inpt)}) to FilterSmallInstances is missing 'format'."
-                )
-            # --- End Defensive Checks ---
+        # Convert to xyxy format for area calculation
+        if format != "xyxy":
+            boxes_xyxy = torchvision.ops.box_convert(boxes, in_fmt=format, out_fmt="xyxy")
+        else:
+            boxes_xyxy = boxes.clone()
+        
+        # Calculate areas
+        widths = boxes_xyxy[:, 2] - boxes_xyxy[:, 0]
+        heights = boxes_xyxy[:, 3] - boxes_xyxy[:, 1]
+        areas = widths * heights
+        
+        # Filter out small instances
+        keep = areas >= self.min_pixels
+        
+        # Check for visibility (boxes not too close to edges)
+        h, w = spatial_size
+        visible_area = torch.minimum(boxes_xyxy[:, 2], torch.tensor(w)) - torch.maximum(boxes_xyxy[:, 0], torch.tensor(0))
+        visible_area *= torch.minimum(boxes_xyxy[:, 3], torch.tensor(h)) - torch.maximum(boxes_xyxy[:, 1], torch.tensor(0))
+        visibility = visible_area / (areas + 1e-8)
+        keep = keep & (visibility >= self.min_visibility)
+        
+        # Filter the boxes
+        filtered_boxes = boxes[keep]
+        
+        # If there are no boxes left, keep at least one (the largest)
+        if filtered_boxes.shape[0] == 0 and boxes.shape[0] > 0:
+            max_idx = torch.argmax(areas)
+            filtered_boxes = boxes[max_idx:max_idx+1]
+        
+        # Create new BoundingBoxes object with filtered boxes
+        return convert_to_tv_tensor(
+            filtered_boxes, key="boxes", box_format=inpt.format, spatial_size=spatial_size
+        )
 
-            # Assuming XYXY format for area calculation for BoundingBoxes tv_tensor
-            # Ensure your BoundingBox format is indeed XYXY at this stage, or adjust logic.
-            # If inpt.format is not XYXY, you might need to convert it first or handle different formats.
-            if str(inpt.format).upper() != "XYXY": # str() for safety if it's an enum
-                 # Potentially convert to XYXY for area calculation then convert back
-                 # For simplicity, this example assumes it's already XYXY or calculation is compatible
-                 pass # Add conversion if necessary
-
-            widths = inpt[:, 2] - inpt[:, 0]
-            heights = inpt[:, 3] - inpt[:, 1]
-            areas = widths * heights
-            keep = areas >= self.min_pixels
-
-            filtered_data = inpt.as_subclass(torch.Tensor)[keep]
-            
-            # Reconstruct using the BoundingBoxes class from _misc
-            # This assumes the _misc.BoundingBoxes constructor matches this signature
-            # and correctly handles the 'format' (e.g., if it's an enum or string)
-            return BoundingBoxes(
-                filtered_data,
-                format=inpt.format,
-                spatial_size=inpt.spatial_size,
-                dtype=inpt.dtype,
-                device=inpt.device
-            )
-
-        elif isinstance(inpt, Mask):
-            # ... (Mask logic remains the same) ...
-            mask_tensor = inpt.as_subclass(torch.Tensor)
-            if mask_tensor.ndim == 2:
-                mask_tensor = mask_tensor.unsqueeze(0)
-            if not mask_tensor.numel() or mask_tensor.shape[0] == 0:
-                return inpt
-            if mask_tensor.ndim < 3:
-                return inpt
-
-            areas = mask_tensor.sum(dim=(-2, -1)) 
-            keep = areas >= self.min_pixels
-            filtered_tensor = mask_tensor[keep]
-            return Mask(filtered_tensor)
-            
-        return inpt
