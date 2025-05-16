@@ -193,7 +193,8 @@ class RandomRotate90(T.Transform):
         
         if isinstance(inpt, BoundingBoxes):
             # For bounding boxes, we need to handle the rotation specially
-            boxes = inpt.as_tensor()
+            # Access boxes directly from the object since there's no as_tensor() method
+            boxes = inpt.boxes  # Access the boxes attribute directly instead of using as_tensor()
             format = inpt.format.value.lower()
             spatial_size = getattr(inpt, _boxes_keys[1])
             h, w = spatial_size
@@ -264,7 +265,8 @@ class RandomPatchGaussian(T.Transform):
             if img_tensor.max() <= 1.0:
                 img_tensor = img_tensor * 255.0
         else:
-            img_tensor = inpt.as_tensor().clone()
+            # For Image class, directly access the tensor instead of using as_tensor()
+            img_tensor = inpt.data.clone() if hasattr(inpt, 'data') else inpt.clone()
             if img_tensor.max() <= 1.0:
                 img_tensor = img_tensor * 255.0
         
@@ -278,8 +280,8 @@ class RandomPatchGaussian(T.Transform):
             patch_w = max(1, int(w * rel_size))
             
             # Random position
-            x = random.randint(0, w - patch_w)
-            y = random.randint(0, h - patch_h)
+            x = random.randint(0, max(0, w - patch_w))
+            y = random.randint(0, max(0, h - patch_h))
             
             # Create Gaussian noise
             noise = torch.randn(c, patch_h, patch_w) * (self.std * 255.0) + (self.mean * 255.0)
@@ -295,7 +297,7 @@ class RandomPatchGaussian(T.Transform):
             img_tensor = img_tensor.to(torch.uint8)
             return F.to_pil_image(img_tensor)
         else:
-            if inpt.as_tensor().max() <= 1.0:
+            if hasattr(inpt, 'data') and inpt.data.max() <= 1.0:
                 img_tensor = img_tensor / 255.0
             return Image(img_tensor)
 
@@ -317,7 +319,8 @@ class FilterSmallInstances(T.Transform):
         self.min_visibility = min_visibility
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        boxes = inpt.as_tensor()
+        # Access boxes directly from the object since there's no as_tensor() method
+        boxes = inpt.boxes
         if boxes.shape[0] == 0:
             return inpt
         
@@ -340,8 +343,10 @@ class FilterSmallInstances(T.Transform):
         
         # Check for visibility (boxes not too close to edges)
         h, w = spatial_size
-        visible_area = torch.minimum(boxes_xyxy[:, 2], torch.tensor(w)) - torch.maximum(boxes_xyxy[:, 0], torch.tensor(0))
-        visible_area *= torch.minimum(boxes_xyxy[:, 3], torch.tensor(h)) - torch.maximum(boxes_xyxy[:, 1], torch.tensor(0))
+        visible_area = torch.minimum(boxes_xyxy[:, 2], torch.tensor(w).to(boxes_xyxy.device)) - \
+                      torch.maximum(boxes_xyxy[:, 0], torch.tensor(0).to(boxes_xyxy.device))
+        visible_area *= torch.minimum(boxes_xyxy[:, 3], torch.tensor(h).to(boxes_xyxy.device)) - \
+                       torch.maximum(boxes_xyxy[:, 1], torch.tensor(0).to(boxes_xyxy.device))
         visibility = visible_area / (areas + 1e-8)
         keep = keep & (visibility >= self.min_visibility)
         
@@ -357,4 +362,3 @@ class FilterSmallInstances(T.Transform):
         return convert_to_tv_tensor(
             filtered_boxes, key="boxes", box_format=inpt.format, spatial_size=spatial_size
         )
-
