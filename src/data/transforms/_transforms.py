@@ -170,29 +170,30 @@ class FilterSmallInstances(T.Transform):
         self.min_pixels = min_pixels
         self.min_visibility = min_visibility
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return self._transform(inpt, params)
-
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        # Assumes inpt is a dict with 'boxes' and optionally 'masks'
         boxes = inpt['boxes']
         masks = inpt.get('masks', None)
 
         keep = []
-        for i in range(len(boxes)):
+        for i in range(boxes.shape[0]):
             box = boxes[i]
             area = (box[2] - box[0]) * (box[3] - box[1])
             if area < self.min_pixels:
                 continue
 
             if masks is not None:
-                mask = masks[i]  # Fix here: define mask per instance
-                visible = mask.sum().item() / (mask.shape[-1] * mask.shape[-2])
+                mask = masks[i]
+                # Make sure mask shape is (H, W)
+                if mask.ndim == 3 and mask.shape[0] == 1:
+                    mask = mask.squeeze(0)  # remove channel dim if present
+
+                visible = mask.sum().item() / (mask.numel())
                 if visible < self.min_visibility:
                     continue
 
             keep.append(i)
 
+        # Apply filtering to all tensor entries:
         for key in inpt:
             if isinstance(inpt[key], torch.Tensor):
                 inpt[key] = inpt[key][keep]
