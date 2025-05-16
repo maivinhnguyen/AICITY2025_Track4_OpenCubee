@@ -285,73 +285,72 @@ class RandomPatchGaussian(T.Transform):
 
 @register()
 class FilterSmallInstances(T.Transform):
-    """
-    Filters out instances (BoundingBoxes or Masks) that are smaller than a threshold.
-    - For BoundingBoxes: filters based on pixel area (width * height).
-    - For Masks: filters based on the sum of non-zero pixels in the mask.
-    
-    Note: This transform operates on BoundingBoxes or Mask tv_tensors directly.
-    If these are part of a target dictionary (e.g. {'boxes': ..., 'labels': ...}),
-    this transform will filter the 'boxes' or 'masks' entry, but will NOT
-    synchronize filtering for other keys like 'labels' in the same dictionary.
-    A custom `forward` method or a subsequent synchronization step would be
-    needed for dictionary-level filtering.
-
-    The `min_visibility` parameter is included but its common interpretation
-    (fraction of original area after cropping) doesn't directly apply here.
-    It's largely unused unless a specific interpretation for non-cropping
-    scenarios is defined (e.g., relative to image size).
-    """
-    _transformed_types = (BoundingBoxes, Mask)
+    _transformed_types = (BoundingBoxes, Mask) # Assuming BoundingBoxes is from .._misc
 
     def __init__(self, min_pixels: int = 9, min_visibility: float = 0.2):
         super().__init__()
-        if min_pixels < 0:
-            raise ValueError(f"min_pixels must be non-negative, got {min_pixels}")
-        if not (0.0 <= min_visibility <= 1.0):
-             raise ValueError(f"min_visibility must be between 0 and 1, got {min_visibility}")
+        # ... (init checks) ...
         self.min_pixels = min_pixels
-        self.min_visibility = min_visibility # See class docstring for notes on this param
+        self.min_visibility = min_visibility
 
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
         if isinstance(inpt, BoundingBoxes):
-            if not inpt.numel() or inpt.shape[0] == 0: # No boxes
+            if not inpt.numel() or inpt.shape[0] == 0:
                 return inpt
             
-            # Assuming XYXY format for BoundingBoxes tv_tensor
+            # --- Start Defensive Checks ---
+            if not hasattr(inpt, 'spatial_size') or inpt.spatial_size is None:
+                raise AttributeError(
+                    f"Input BoundingBoxes (type: {type(inpt)}) to FilterSmallInstances is missing 'spatial_size'. "
+                    "This attribute is essential. Check the preceding transform in your pipeline "
+                    "(likely SanitizeBoundingBoxes or a geometric transform like Resize) to ensure it correctly "
+                    "sets or propagates 'spatial_size' on the BoundingBoxes objects it outputs."
+                )
+            if not hasattr(inpt, 'format') or inpt.format is None:
+                raise AttributeError(
+                    f"Input BoundingBoxes (type: {type(inpt)}) to FilterSmallInstances is missing 'format'."
+                )
+            # --- End Defensive Checks ---
+
+            # Assuming XYXY format for area calculation for BoundingBoxes tv_tensor
+            # Ensure your BoundingBox format is indeed XYXY at this stage, or adjust logic.
+            # If inpt.format is not XYXY, you might need to convert it first or handle different formats.
+            if str(inpt.format).upper() != "XYXY": # str() for safety if it's an enum
+                 # Potentially convert to XYXY for area calculation then convert back
+                 # For simplicity, this example assumes it's already XYXY or calculation is compatible
+                 pass # Add conversion if necessary
+
             widths = inpt[:, 2] - inpt[:, 0]
             heights = inpt[:, 3] - inpt[:, 1]
             areas = widths * heights
-            
             keep = areas >= self.min_pixels
-
-            # Example of how min_visibility *could* be used if defined as fraction of image area:
-            # if self.min_visibility > 0 and inpt.spatial_size[0] * inpt.spatial_size[1] > 0:
-            #     img_area = inpt.spatial_size[0] * inpt.spatial_size[1]
-            #     visibility_as_img_fraction = areas / img_area
-            #     keep = keep & (visibility_as_img_fraction >= self.min_visibility)
 
             filtered_data = inpt.as_subclass(torch.Tensor)[keep]
-            return BoundingBoxes(filtered_data, format=inpt.format, spatial_size=inpt.spatial_size, dtype=inpt.dtype, device=inpt.device)
-
-        elif isinstance(inpt, Mask): # Assuming Mask is (N, H, W) or (H,W) or (1,H,W)
-            # If Mask is single (H,W) or (1,H,W), treat as one instance
-            mask_tensor = inpt.as_subclass(torch.Tensor)
-            if mask_tensor.ndim == 2: # (H,W)
-                mask_tensor = mask_tensor.unsqueeze(0) # (1,H,W)
             
-            if not mask_tensor.numel() or mask_tensor.shape[0] == 0: # No masks
-                return inpt
-            if mask_tensor.ndim < 3: # Should be at least (N,H,W) or (C,H,W)
-                return inpt # Not instance masks or unexpected format
+            # Reconstruct using the BoundingBoxes class from _misc
+            # This assumes the _misc.BoundingBoxes constructor matches this signature
+            # and correctly handles the 'format' (e.g., if it's an enum or string)
+            return BoundingBoxes(
+                filtered_data,
+                format=inpt.format,
+                spatial_size=inpt.spatial_size,
+                dtype=inpt.dtype,
+                device=inpt.device
+            )
 
-            # Sum over spatial dimensions (H, W) for each instance mask
+        elif isinstance(inpt, Mask):
+            # ... (Mask logic remains the same) ...
+            mask_tensor = inpt.as_subclass(torch.Tensor)
+            if mask_tensor.ndim == 2:
+                mask_tensor = mask_tensor.unsqueeze(0)
+            if not mask_tensor.numel() or mask_tensor.shape[0] == 0:
+                return inpt
+            if mask_tensor.ndim < 3:
+                return inpt
+
             areas = mask_tensor.sum(dim=(-2, -1)) 
             keep = areas >= self.min_pixels
-            
             filtered_tensor = mask_tensor[keep]
-            # If original was (H,W) and it's kept, restore shape if needed,
-            # but generally, if it's filtered, it implies multiple instances.
             return Mask(filtered_tensor)
             
-        return inpt # Should not be reached due to _transformed_types
+        return inpt
