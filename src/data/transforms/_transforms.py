@@ -12,9 +12,6 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
-import random
-import math
-import numpy as np
 
 from ...core import register
 from .._misc import (
@@ -163,4 +160,3 @@ class ConvertPILImage(T.Transform):
         inpt = Image(inpt)
 
         return inpt
-
