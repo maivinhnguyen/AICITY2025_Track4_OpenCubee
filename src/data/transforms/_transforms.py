@@ -160,3 +160,62 @@ class ConvertPILImage(T.Transform):
         inpt = Image(inpt)
 
         return inpt
+
+@register()
+class RandomRotate90(T.Transform):
+    def __init__(self, p=0.5):
+        super().__init__()
+        self.p = p
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        if torch.rand(1) < self.p:
+            k = torch.randint(0, 4, (1,)).item()
+            return F.rotate(inpt, angle=90 * k)
+        return inpt
+
+
+@register()
+class RandomPatchGaussian(T.Transform):
+    def __init__(self, p=0.3, patch_size=64, sigma=0.2):
+        super().__init__()
+        self.p = p
+        self.patch_size = patch_size
+        self.sigma = sigma
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        if isinstance(inpt, Image) and torch.rand(1) < self.p:
+            img = inpt.as_tensor()
+            h, w = img.shape[-2:]
+            ph, pw = self.patch_size, self.patch_size
+            top = torch.randint(0, h - ph + 1, (1,)).item()
+            left = torch.randint(0, w - pw + 1, (1,)).item()
+            noise = torch.randn_like(img[:, top:top+ph, left:left+pw]) * self.sigma
+            img[:, top:top+ph, left:left+pw] += noise
+            img = img.clamp(0, 1)
+            return Image(img)
+        return inpt
+
+@register()
+class FilterSmallInstances(T.Transform):
+    _transformed_types = (BoundingBoxes,)
+
+    def __init__(self, min_pixels=9, min_visibility=0.2):
+        super().__init__()
+        self.min_pixels = min_pixels
+        self.min_visibility = min_visibility
+
+    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        return self._transform(inpt, params)
+
+    def _transform(self, inpt: BoundingBoxes, params: Dict[str, Any]) -> BoundingBoxes:
+        boxes = inpt.as_tensor()
+        spatial_size = getattr(inpt, _boxes_keys[1])
+        area = boxes[:, 2] * boxes[:, 3] * (spatial_size[0] * spatial_size[1])
+        keep = (area >= self.min_pixels) & (boxes[:, 2] > 0) & (boxes[:, 3] > 0)
+        return inpt[keep]
