@@ -166,15 +166,21 @@ class RandomRotate90(T.Transform):
     def __init__(self, p=0.5):
         super().__init__()
         self.p = p
+        self.k = None
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return self._transform(inpt, params)
-
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+    def _get_params(self, flat_inputs):
         if torch.rand(1) < self.p:
-            k = torch.randint(0, 4, (1,)).item()
-            return F.rotate(inpt, angle=90 * k)
-        return inpt
+            self.k = torch.randint(1, 4, (1,)).item()  # 90, 180, or 270 degrees
+        else:
+            self.k = 0
+        return {"k": self.k}
+
+    def _transform(self, inpt, params):
+        k = params["k"]
+        if k == 0:
+            return inpt
+
+        return F.rotate(inpt, angle=90 * k, expand=False)
 
 
 @register()
@@ -185,21 +191,20 @@ class RandomPatchGaussian(T.Transform):
         self.patch_size = patch_size
         self.sigma = sigma
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return self._transform(inpt, params)
+    def _transform(self, inpt, params):
+        if not isinstance(inpt, Image) or torch.rand(1) >= self.p:
+            return inpt
 
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        if isinstance(inpt, Image) and torch.rand(1) < self.p:
-            img = inpt.as_tensor()
-            h, w = img.shape[-2:]
-            ph, pw = self.patch_size, self.patch_size
-            top = torch.randint(0, h - ph + 1, (1,)).item()
-            left = torch.randint(0, w - pw + 1, (1,)).item()
-            noise = torch.randn_like(img[:, top:top+ph, left:left+pw]) * self.sigma
-            img[:, top:top+ph, left:left+pw] += noise
-            img = img.clamp(0, 1)
-            return Image(img)
-        return inpt
+        img = inpt.clone()
+        _, h, w = img.shape
+        ph, pw = min(self.patch_size, h), min(self.patch_size, w)
+        top = torch.randint(0, h - ph + 1, (1,)).item()
+        left = torch.randint(0, w - pw + 1, (1,)).item()
+
+        noise = torch.randn_like(img[:, top:top+ph, left:left+pw]) * self.sigma
+        img[:, top:top+ph, left:left+pw] += noise
+        img = img.clamp(0.0, 1.0)
+        return Image(img)
 
 @register()
 class FilterSmallInstances(T.Transform):
@@ -208,14 +213,22 @@ class FilterSmallInstances(T.Transform):
     def __init__(self, min_pixels=9, min_visibility=0.2):
         super().__init__()
         self.min_pixels = min_pixels
-        self.min_visibility = min_visibility
+        self.min_visibility = min_visibility  # Reserved for masks if needed
 
-    def transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
-        return self._transform(inpt, params)
+    def _transform(self, inpt, params):
+        boxes = inpt
+        spatial_size = getattr(inpt, _boxes_keys[1])  # (H, W)
 
-    def _transform(self, inpt: BoundingBoxes, params: Dict[str, Any]) -> BoundingBoxes:
-        boxes = inpt.as_tensor()
-        spatial_size = getattr(inpt, _boxes_keys[1])
-        area = boxes[:, 2] * boxes[:, 3] * (spatial_size[0] * spatial_size[1])
-        keep = (area >= self.min_pixels) & (boxes[:, 2] > 0) & (boxes[:, 3] > 0)
+        if boxes.format == torchvision.tv_tensors.BoundingBoxFormat.XYXY:
+            boxes = torchvision.ops.box_convert(boxes, in_fmt='xyxy', out_fmt='cxcywh')
+
+        if getattr(inpt, "normalized", False):
+            h, w = spatial_size
+            boxes = boxes.clone()
+            boxes[:, 2] *= w
+            boxes[:, 3] *= h
+
+        area = boxes[:, 2] * boxes[:, 3]
+        keep = area >= self.min_pixels
         return inpt[keep]
+
