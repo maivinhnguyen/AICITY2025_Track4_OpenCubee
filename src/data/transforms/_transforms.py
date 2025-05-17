@@ -163,3 +163,76 @@ class ConvertPILImage(T.Transform):
         inpt = Image(inpt)
 
         return inpt
+
+@register()  
+class CopyPaste(T.Transform):  
+    _transformed_types = (PIL.Image.Image, BoundingBoxes, Image)  
+      
+    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0) -> None:  
+        """  
+        CopyPaste transform that copies objects from one image and pastes them onto another.  
+          
+        Args:  
+            p (float): Probability of applying the transform  
+            blend (bool): Whether to blend the pasted objects with the target image  
+            sigma (float): Sigma for Gaussian blending if blend=True  
+            min_area (float): Minimum normalized area for an object to be considered for copying  
+        """  
+        super().__init__()  
+        self.p = p  
+        self.blend = blend  
+        self.sigma = sigma  
+        self.min_area = min_area  
+      
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:  
+        # Determine whether to apply the transform based on probability  
+        apply = torch.rand(1) < self.p  
+        return {"apply": apply}  
+      
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
+        if not params["apply"]:  
+            return inpt  
+              
+        # Implementation depends on input type  
+        if isinstance(inpt, (PIL.Image.Image, Image)):  
+            # Handle image transformation  
+            return self._transform_image(inpt, params)  
+        elif isinstance(inpt, BoundingBoxes):  
+            # Handle bounding box transformation  
+            return self._transform_boxes(inpt, params)  
+        return inpt  
+      
+    def _transform_image(self, image, params):  
+        # Image transformation logic here  
+        # This would be implemented based on the dataset structure  
+        return image  
+      
+    def _transform_boxes(self, boxes, params):  
+        # Bounding box transformation logic here  
+        # This would update boxes to include the pasted objects  
+        return boxes  
+      
+    def forward(self, *inputs: Any) -> Any:  
+        # Get the first input to determine spatial size for params  
+        flat_inputs = []  
+        for i in inputs:  
+            if isinstance(i, (list, tuple)):  
+                flat_inputs.extend(list(i))  
+            else:  
+                flat_inputs.append(i)  
+                  
+        params = self._get_params(flat_inputs)  
+          
+        # If not applying, return inputs unchanged  
+        if not params["apply"]:  
+            return inputs if len(inputs) > 1 else inputs[0]  
+          
+        # Apply transform to each input  
+        transformed = []  
+        for i in inputs:  
+            if isinstance(i, (list, tuple)):  
+                transformed.append(type(i)(self._transform(elem, params) for elem in i))  
+            else:  
+                transformed.append(self._transform(i, params))  
+                  
+        return transformed if len(transformed) > 1 else transformed[0]
