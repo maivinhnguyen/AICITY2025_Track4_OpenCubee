@@ -12,10 +12,14 @@ from ._transforms import (
     RandomCrop,
     RandomHorizontalFlip,
     RandomIoUCrop,
+    RandomAffine,
     RandomPhotometricDistort,
     RandomZoomOut,
     Resize,
     SanitizeBoundingBoxes,
+    RandomFisheyeShiftCrop,
+    FisheyeEdgeStretchCrop,
+    
 )
 from .container import Compose
 from .mosaic import Mosaic

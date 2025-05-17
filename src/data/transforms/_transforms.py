@@ -160,3 +160,47 @@ class ConvertPILImage(T.Transform):
         inpt = Image(inpt)
 
         return inpt
+
+@register()
+class RandomFisheyeShiftCrop:
+    def __init__(self, max_shift=0.25, crop_ratio=0.85, p=0.7):
+        self.max_shift = max_shift
+        self.crop_ratio = crop_ratio
+        self.p = p
+
+    def __call__(self, image, target=None):
+        if torch.rand(1).item() > self.p:
+            return image, target
+
+        _, h, w = image.shape
+        shift_x = int(torch.rand(1).item() * self.max_shift * w * (1 if torch.rand(1).item() > 0.5 else -1))
+        shift_y = int(torch.rand(1).item() * self.max_shift * h * (1 if torch.rand(1).item() > 0.5 else -1))
+
+        new_w = int(w * self.crop_ratio)
+        new_h = int(h * self.crop_ratio)
+
+        left = min(max(0, (w - new_w) // 2 + shift_x), w - new_w)
+        top = min(max(0, (h - new_h) // 2 + shift_y), h - new_h)
+
+        image = image[:, top:top + new_h, left:left + new_w]
+        # Note: adjust `target["boxes"]` if needed
+        return image, target
+
+@register()
+class FisheyeEdgeStretchCrop:
+    def __init__(self, stretch_prob=0.5, scale_y=0.9):
+        self.stretch_prob = stretch_prob
+        self.scale_y = scale_y
+
+    def __call__(self, image, target=None):
+        if torch.rand(1).item() > self.stretch_prob:
+            return image, target
+
+        _, h, w = image.shape
+        mid_y = h // 2
+        top = F.resize(image[:, :mid_y, :], [int(mid_y * self.scale_y)])
+        bottom = F.resize(image[:, mid_y:, :], [int(mid_y * self.scale_y)])
+        image = torch.cat([top, bottom], dim=1)
+        image = F.resize(image, [h, w])
+        # Note: adjust `target["boxes"]` if needed
+        return image, target
