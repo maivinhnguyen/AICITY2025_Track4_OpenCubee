@@ -169,24 +169,18 @@ class RandomFisheyeShiftCrop:
         self.p = p
 
     def __call__(self, inputs):
-        # Unpack inputs robustly
-        if isinstance(inputs, (tuple, list)):
-            image = inputs[0]
-            target = inputs[1] if len(inputs) > 1 else None
-            others = inputs[2:] if len(inputs) > 2 else []
-        else:
-            image = inputs
-            target = None
-            others = []
+        image, target = inputs
 
         if torch.rand(1).item() > self.p:
-            # Return inputs unchanged but preserve format
-            if target is not None:
-                return (image, target, *others) if others else (image, target)
-            else:
-                return image
+            return image, target
 
-        _, h, w = image.shape
+        # Get size from PIL image
+        if hasattr(image, 'size'):
+            w, h = image.size
+        else:
+            # fallback for tensor (C,H,W)
+            _, h, w = image.shape
+
         shift_x = int(torch.rand(1).item() * self.max_shift * w * (1 if torch.rand(1).item() > 0.5 else -1))
         shift_y = int(torch.rand(1).item() * self.max_shift * h * (1 if torch.rand(1).item() > 0.5 else -1))
 
@@ -196,13 +190,46 @@ class RandomFisheyeShiftCrop:
         left = min(max(0, (w - new_w) // 2 + shift_x), w - new_w)
         top = min(max(0, (h - new_h) // 2 + shift_y), h - new_h)
 
-        image = image[:, top : top + new_h, left : left + new_w]
-        # TODO: Adjust target["boxes"] if needed
+        # Crop PIL Image
+        image = image.crop((left, top, left + new_w, top + new_h))
 
-        if target is not None:
-            return (image, target, *others) if others else (image, target)
-        else:
-            return image
+        # Convert cropped PIL image to tensor normalized [0,1]
+        image = F.pil_to_tensor(image).to(torch.float32) / 255.0
+
+        boxes = target["boxes"]
+
+        # Convert normalized boxes to absolute if needed
+        if boxes.max() <= 1.0:
+            boxes = boxes.clone()
+            boxes[:, [0, 2]] *= w
+            boxes[:, [1, 3]] *= h
+
+        # Adjust boxes for crop
+        boxes = boxes - torch.tensor([left, top, left, top], device=boxes.device, dtype=boxes.dtype)
+
+        # Clamp boxes inside crop bounds
+        boxes[:, 0].clamp_(min=0, max=new_w)
+        boxes[:, 1].clamp_(min=0, max=new_h)
+        boxes[:, 2].clamp_(min=0, max=new_w)
+        boxes[:, 3].clamp_(min=0, max=new_h)
+
+        # Remove invalid boxes
+        keep = (boxes[:, 2] > boxes[:, 0]) & (boxes[:, 3] > boxes[:, 1])
+        boxes = boxes[keep]
+
+        # Filter other target tensors accordingly
+        for k, v in target.items():
+            if isinstance(v, torch.Tensor) and len(v) == len(keep):
+                target[k] = v[keep]
+
+        # Normalize boxes back if needed
+        if boxes.max() > 1.0:
+            boxes[:, [0, 2]] /= new_w
+            boxes[:, [1, 3]] /= new_h
+
+        target["boxes"] = boxes
+
+        return image, target
 
 
 @register()
@@ -212,34 +239,80 @@ class FisheyeEdgeStretchCrop:
         self.scale_y = scale_y
 
     def __call__(self, inputs):
-        # Unpack inputs robustly
-        if isinstance(inputs, (tuple, list)):
-            image = inputs[0]
-            target = inputs[1] if len(inputs) > 1 else None
-            others = inputs[2:] if len(inputs) > 2 else []
-        else:
-            image = inputs
-            target = None
-            others = []
+        image, target = inputs
 
         if torch.rand(1).item() > self.stretch_prob:
-            # Return unchanged, same format
-            if target is not None:
-                return (image, target, *others) if others else (image, target)
-            else:
-                return image
+            # Convert to tensor if PIL
+            if hasattr(image, 'size'):
+                image = F.pil_to_tensor(image).to(torch.float32) / 255.0
+            return image, target
 
-        _, h, w = image.shape
+        # Get size from PIL image or tensor
+        if hasattr(image, 'size'):
+            w, h = image.size
+            # Convert PIL to tensor for resizing operations
+            image = F.pil_to_tensor(image).to(torch.float32) / 255.0
+        else:
+            _, h, w = image.shape
+
         mid_y = h // 2
 
-        top = F.resize(image[:, :mid_y, :], [int(mid_y * self.scale_y)])
-        bottom = F.resize(image[:, mid_y:, :], [int(mid_y * self.scale_y)])
+        # Resize top and bottom halves separately
+        top = F.resize(image[:, :mid_y, :], [int(mid_y * self.scale_y), w])
+        bottom = F.resize(image[:, mid_y:, :], [int(mid_y * self.scale_y), w])
         image = torch.cat([top, bottom], dim=1)
         image = F.resize(image, [h, w])
 
-        # TODO: Adjust target["boxes"] if needed
+        boxes = target["boxes"]
 
-        if target is not None:
-            return (image, target, *others) if others else (image, target)
-        else:
-            return image
+        # Convert normalized boxes to absolute if needed
+        if boxes.max() <= 1.0:
+            boxes = boxes.clone()
+            boxes[:, [0, 2]] *= w
+            boxes[:, [1, 3]] *= h
+
+        new_boxes = boxes.clone()
+
+        # Masks for boxes in top, bottom, or crossing middle
+        top_mask = boxes[:, 3] <= mid_y
+        bottom_mask = boxes[:, 1] >= mid_y
+        cross_mask = ~(top_mask | bottom_mask)
+
+        # Scale top half boxes y coords
+        new_boxes[top_mask, 1] = boxes[top_mask, 1] * self.scale_y
+        new_boxes[top_mask, 3] = boxes[top_mask, 3] * self.scale_y
+
+        # Scale bottom half boxes y coords (relative to mid_y)
+        new_boxes[bottom_mask, 1] = (boxes[bottom_mask, 1] - mid_y) * self.scale_y + int(mid_y * self.scale_y)
+        new_boxes[bottom_mask, 3] = (boxes[bottom_mask, 3] - mid_y) * self.scale_y + int(mid_y * self.scale_y)
+
+        # Leave cross_mask boxes unchanged for simplicity
+
+        # After vertical scaling, image resized back to original height
+        scale_back = h / (2 * int(mid_y * self.scale_y))
+        new_boxes[:, 1] = new_boxes[:, 1] * scale_back
+        new_boxes[:, 3] = new_boxes[:, 3] * scale_back
+
+        # Clamp boxes to image bounds
+        new_boxes[:, 0].clamp_(min=0, max=w)
+        new_boxes[:, 1].clamp_(min=0, max=h)
+        new_boxes[:, 2].clamp_(min=0, max=w)
+        new_boxes[:, 3].clamp_(min=0, max=h)
+
+        # Remove invalid boxes
+        keep = (new_boxes[:, 2] > new_boxes[:, 0]) & (new_boxes[:, 3] > new_boxes[:, 1])
+        new_boxes = new_boxes[keep]
+
+        # Filter other target tensors accordingly
+        for k, v in target.items():
+            if isinstance(v, torch.Tensor) and len(v) == len(keep):
+                target[k] = v[keep]
+
+        # Normalize boxes back if needed
+        if new_boxes.max() > 1.0:
+            new_boxes[:, [0, 2]] /= w
+            new_boxes[:, [1, 3]] /= h
+
+        target["boxes"] = new_boxes
+
+        return image, target
