@@ -18,8 +18,9 @@ DFINETransformer:
   eval_idx: -1  # -2 -3
 
 HybridEncoder:
-  in_channels: [192, 384, 768]
-  feat_strides: [8, 16, 32]
+  in_channels: [384, 768, 1536]
+  hidden_dim: 256
+  depth_mult: 0.67
 
 optimizer:
   type: AdamW
