@@ -168,7 +168,8 @@ class RandomFisheyeShiftCrop:
         self.crop_ratio = crop_ratio
         self.p = p
 
-    def __call__(self, image, target=None):
+    def __call__(self, inputs):
+        image, target = inputs
         if torch.rand(1).item() > self.p:
             return image, target
 
@@ -183,8 +184,10 @@ class RandomFisheyeShiftCrop:
         top = min(max(0, (h - new_h) // 2 + shift_y), h - new_h)
 
         image = image[:, top:top + new_h, left:left + new_w]
-        # Note: adjust `target["boxes"]` if needed
+        # You can add bbox adjustment here if needed
+
         return image, target
+
 
 @register()
 class FisheyeEdgeStretchCrop:
@@ -192,7 +195,8 @@ class FisheyeEdgeStretchCrop:
         self.stretch_prob = stretch_prob
         self.scale_y = scale_y
 
-    def __call__(self, image, target=None):
+    def __call__(self, inputs):
+        image, target = inputs
         if torch.rand(1).item() > self.stretch_prob:
             return image, target
 
@@ -202,5 +206,5 @@ class FisheyeEdgeStretchCrop:
         bottom = F.resize(image[:, mid_y:, :], [int(mid_y * self.scale_y)])
         image = torch.cat([top, bottom], dim=1)
         image = F.resize(image, [h, w])
-        # Note: adjust `target["boxes"]` if needed
+
         return image, target
