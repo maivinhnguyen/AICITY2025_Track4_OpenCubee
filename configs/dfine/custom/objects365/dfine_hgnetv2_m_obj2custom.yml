@@ -13,14 +13,15 @@ DFINE:
   
 TorchVisionModel:  # Add this section  
   name: 'swin_v2_t'  # Specify the Swin-L model  
-  out_indices: [1, 2, 3]  # Match the return_idx from your current config
+  pretrained: True  
+  return_layers: ['features.5', 'features.6', 'features.7']  # Adjust these based on Swin V2 Tiny architecture
 
 DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
 HybridEncoder:  
-  in_channels: [384, 768, 1536]  # Adjust these based on Swin-L output channels  
+  in_channels: [192, 384, 768]  # Adjust these based on Swin V2 Tiny output channels  
   hidden_dim: 256  
   depth_mult: 0.67
 
