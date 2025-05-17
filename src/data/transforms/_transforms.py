@@ -236,3 +236,167 @@ class CopyPaste(T.Transform):
                 transformed.append(self._transform(i, params))  
                   
         return transformed if len(transformed) > 1 else transformed[0]
+    
+@register()  
+class FilterSmallInstance(T.Transform):  
+    _transformed_types = (BoundingBoxes,)  
+      
+    def __init__(self, min_size=1, min_area=0.0, normalized=False) -> None:  
+        """  
+        Filter out small instances from bounding boxes.  
+          
+        Args:  
+            min_size (int): Minimum size (width or height) in pixels  
+            min_area (float): Minimum area as a fraction of image area (if normalized=True) or in pixels  
+            normalized (bool): Whether min_area is normalized to image size  
+        """  
+        super().__init__()  
+        self.min_size = min_size  
+        self.min_area = min_area  
+        self.normalized = normalized  
+      
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
+        if not isinstance(inpt, BoundingBoxes):  
+            return inpt  
+              
+        boxes = inpt.as_tensor()  
+        spatial_size = getattr(inpt, _boxes_keys[1])  
+          
+        # Calculate width and height  
+        if inpt.format.value.lower() == 'xyxy':  
+            widths = boxes[:, 2] - boxes[:, 0]  
+            heights = boxes[:, 3] - boxes[:, 1]  
+        elif inpt.format.value.lower() == 'xywh':  
+            widths = boxes[:, 2]  
+            heights = boxes[:, 3]  
+        elif inpt.format.value.lower() == 'cxcywh':  
+            widths = boxes[:, 2]  
+            heights = boxes[:, 3]  
+          
+        # Calculate areas  
+        areas = widths * heights  
+          
+        # Apply size filter  
+        if self.normalized:  
+            # If boxes are normalized, convert min_size to normalized units  
+            norm_min_size_w = self.min_size / spatial_size[1]  # width  
+            norm_min_size_h = self.min_size / spatial_size[0]  # height  
+            mask = (widths >= norm_min_size_w) & (heights >= norm_min_size_h)  
+        else:  
+            mask = (widths >= self.min_size) & (heights >= self.min_size)  
+          
+        # Apply area filter  
+        if self.min_area > 0:  
+            if self.normalized:  
+                area_mask = areas >= self.min_area  
+            else:  
+                # Convert absolute area to normalized  
+                norm_min_area = self.min_area / (spatial_size[0] * spatial_size[1])  
+                area_mask = areas >= norm_min_area  
+            mask = mask & area_mask  
+          
+        # Filter boxes and labels  
+        filtered_boxes = boxes[mask]  
+          
+        # Create new BoundingBoxes object with filtered data  
+        result = convert_to_tv_tensor(  
+            filtered_boxes,   
+            key="boxes",   
+            box_format=inpt.format.value,   
+            spatial_size=spatial_size  
+        )  
+          
+        # If there are additional fields in the input (like labels), filter them too  
+        if hasattr(inpt, "extra_fields"):  
+            for k, v in inpt.extra_fields.items():  
+                if isinstance(v, torch.Tensor) and len(v) == len(boxes):  
+                    result.extra_fields[k] = v[mask]  
+          
+        return result
+
+@register()  
+class RandomPatchGaussian(T.Transform):  
+    _transformed_types = (PIL.Image.Image, Image)  
+      
+    def __init__(self, p=0.5, num_patches=3, patch_size=(0.1, 0.3), sigma=(0.1, 0.2)) -> None:  
+        """  
+        Apply random Gaussian noise patches to images.  
+          
+        Args:  
+            p (float): Probability of applying the transform  
+            num_patches (int or tuple): Number of patches to apply (if tuple, range of values)  
+            patch_size (tuple): Range of patch sizes as fraction of image size (min, max)  
+            sigma (tuple): Range of standard deviations for Gaussian noise (min, max)  
+        """  
+        super().__init__()  
+        self.p = p  
+        self.num_patches = num_patches if isinstance(num_patches, tuple) else (num_patches, num_patches)  
+        self.patch_size = patch_size  
+        self.sigma = sigma  
+      
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:  
+        # Determine whether to apply the transform based on probability  
+        apply = torch.rand(1) < self.p  
+        if not apply:  
+            return {"apply": False}  
+          
+        # Get image size  
+        img = flat_inputs[0]  
+        if isinstance(img, PIL.Image.Image):  
+            width, height = img.size  
+        else:  # Image tensor  
+            _, height, width = img.shape  
+          
+        # Determine number of patches  
+        num_patches = torch.randint(self.num_patches[0], self.num_patches[1] + 1, (1,)).item()  
+          
+        # Generate patch parameters  
+        patches = []  
+        for _ in range(num_patches):  
+            # Patch size as fraction of image size  
+            patch_w_frac = torch.FloatTensor(1).uniform_(*self.patch_size).item()  
+            patch_h_frac = torch.FloatTensor(1).uniform_(*self.patch_size).item()  
+              
+            # Convert to pixel dimensions  
+            patch_w = int(width * patch_w_frac)  
+            patch_h = int(height * patch_h_frac)  
+              
+            # Patch position  
+            x = torch.randint(0, width - patch_w + 1, (1,)).item()  
+            y = torch.randint(0, height - patch_h + 1, (1,)).item()  
+              
+            # Noise sigma  
+            sigma = torch.FloatTensor(1).uniform_(*self.sigma).item()  
+              
+            patches.append((x, y, patch_w, patch_h, sigma))  
+          
+        return {"apply": True, "patches": patches}  
+      
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
+        if not params["apply"]:  
+            return inpt  
+          
+        if isinstance(inpt, PIL.Image.Image):  
+            # Convert PIL image to tensor for processing  
+            tensor = F.pil_to_tensor(inpt).float() / 255.0  
+            tensor = self._apply_patches(tensor, params["patches"])  
+            # Convert back to PIL  
+            return F.to_pil_image((tensor * 255.0).byte())  
+        elif isinstance(inpt, Image):  
+            # Process tensor directly  
+            tensor = inpt.as_tensor()  
+            tensor = self._apply_patches(tensor, params["patches"])  
+            return Image(tensor)  
+          
+        return inpt  
+      
+    def _apply_patches(self, tensor, patches):  
+        # Apply Gaussian noise patches to tensor  
+        for x, y, w, h, sigma in patches:  
+            noise = torch.randn(tensor.shape[0], h, w) * sigma  
+            tensor[:, y:y+h, x:x+w] += noise  
+              
+            # Clamp values to valid range [0, 1]  
+            tensor = torch.clamp(tensor, 0, 1)  
+          
+        return tensor
