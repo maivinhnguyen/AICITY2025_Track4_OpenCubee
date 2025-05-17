@@ -12,6 +12,9 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
+import json
+import random
+import os
 
 from ...core import register
 from .._misc import (
@@ -160,4 +163,68 @@ class ConvertPILImage(T.Transform):
         inpt = Image(inpt)
 
         return inpt
+    
+@register()
+class CopyPaste(T.Transform):
+    _transformed_types = (PIL.Image.Image,)
+    def __init__(self, p=0.3, source_json=None, source_img_dir=None):
+        super().__init__()
+        self.p = p
+        self.source_img_dir = source_img_dir
 
+        with open(source_json, 'r') as f:
+            data = json.load(f)
+
+        self.img_id_to_file = {img['id']: img['file_name'] for img in data['images']}
+        self.img_id_to_anns = {}
+        for ann in data['annotations']:
+            self.img_id_to_anns.setdefault(ann['image_id'], []).append(ann)
+        self.image_ids = list(self.img_id_to_file.keys())
+
+    def transform(self, inpt: PIL.Image.Image, params: dict) -> PIL.Image.Image:
+        return inpt  # No changes here — everything is done in __call__
+
+    def transform_target(self, target: dict, params: dict) -> dict:
+        return target
+
+    def _transform(self, inpt, params):
+        return inpt
+
+    def __call__(self, inpt: PIL.Image.Image, target: dict):
+        if random.random() > self.p:
+            return inpt, target
+
+        donor_img_id = random.choice(self.image_ids)
+        donor_file = self.img_id_to_file[donor_img_id]
+        donor_path = os.path.join(self.source_img_dir, donor_file)
+
+        try:
+            donor_image = PIL.Image.open(donor_path).convert("RGB")
+        except Exception:
+            return inpt, target
+
+        donor_anns = self.img_id_to_anns[donor_img_id]
+
+        for ann in donor_anns:
+            x, y, w, h = map(int, ann['bbox'])  # COCO: [x, y, w, h]
+            if w < 8 or h < 8 or x < 0 or y < 0 or x + w > donor_image.width or y + h > donor_image.height:
+                continue
+
+            obj_crop = donor_image.crop((x, y, x + w, y + h))
+            paste_x = random.randint(0, max(0, inpt.width - w))
+            paste_y = random.randint(0, max(0, inpt.height - h))
+
+            inpt.paste(obj_crop, (paste_x, paste_y))
+
+            new_box = [paste_x, paste_y, w, h]
+            if isinstance(target.get("boxes"), torch.Tensor):
+                target["boxes"] = torch.cat([target["boxes"], torch.tensor([new_box], dtype=torch.float32)])
+            else:
+                target["boxes"] = torch.tensor([new_box], dtype=torch.float32)
+
+            if isinstance(target.get("labels"), torch.Tensor):
+                target["labels"] = torch.cat([target["labels"], torch.tensor([ann["category_id"]], dtype=torch.int64)])
+            else:
+                target["labels"] = torch.tensor([ann["category_id"]], dtype=torch.int64)
+
+        return inpt, target

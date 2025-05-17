@@ -10,15 +10,8 @@ output_dir: ./output/dfine_hgnetv2_m_obj2custom
 
 
 DFINE:
-  backbone: HGNetv2
+  backbone: TorchVisionModel
 
-HGNetv2:
-  name: 'B2'
-  return_idx: [1, 2, 3]
-  freeze_at: -1
-  freeze_norm: False
-  use_lab: True
-  pretrained: False
 
 DFINETransformer:
   num_layers: 4  # 5 6
@@ -48,7 +41,7 @@ optimizer:
   weight_decay: 0.000125
 
 
-epochs: 46 # Early stop
+epochs: 50 # Early stop
 train_dataloader:
   dataset:
     transforms:
