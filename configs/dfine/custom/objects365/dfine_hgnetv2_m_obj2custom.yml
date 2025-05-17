@@ -14,7 +14,7 @@ DFINE:
 TorchVisionModel:  # Add this section  
   name: 'swin_v2_t'  # Specify the Swin-L model  
   weights: 'DEFAULT'  
-  return_layers: ['3', '5', '7']
+  return_layers: {'features.1': '0', 'features.3': '1', 'features.5': '2'}  # Map layer names to indices
 
 DFINETransformer:
   num_layers: 4  # 5 6
