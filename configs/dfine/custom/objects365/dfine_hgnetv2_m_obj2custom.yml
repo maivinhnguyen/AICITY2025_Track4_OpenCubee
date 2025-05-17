@@ -12,7 +12,7 @@ DFINE:
   backbone: TorchVisionModel  # Change from HGNetv2 to TorchVisionModel  
   
 TorchVisionModel:  # Add this section  
-  name: 'swin_v2_l'  # Specify the Swin-L model  
+  name: 'swin_v2_t'  # Specify the Swin-L model  
   pretrained: True  
   features_only: True  
   out_indices: [1, 2, 3]  # Match the return_idx from your current config
