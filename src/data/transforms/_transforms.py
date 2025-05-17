@@ -169,9 +169,22 @@ class RandomFisheyeShiftCrop:
         self.p = p
 
     def __call__(self, inputs):
-        image, target = inputs
+        # Unpack inputs robustly
+        if isinstance(inputs, (tuple, list)):
+            image = inputs[0]
+            target = inputs[1] if len(inputs) > 1 else None
+            others = inputs[2:] if len(inputs) > 2 else []
+        else:
+            image = inputs
+            target = None
+            others = []
+
         if torch.rand(1).item() > self.p:
-            return image, target
+            # Return inputs unchanged but preserve format
+            if target is not None:
+                return (image, target, *others) if others else (image, target)
+            else:
+                return image
 
         _, h, w = image.shape
         shift_x = int(torch.rand(1).item() * self.max_shift * w * (1 if torch.rand(1).item() > 0.5 else -1))
@@ -183,10 +196,13 @@ class RandomFisheyeShiftCrop:
         left = min(max(0, (w - new_w) // 2 + shift_x), w - new_w)
         top = min(max(0, (h - new_h) // 2 + shift_y), h - new_h)
 
-        image = image[:, top:top + new_h, left:left + new_w]
-        # You can add bbox adjustment here if needed
+        image = image[:, top : top + new_h, left : left + new_w]
+        # TODO: Adjust target["boxes"] if needed
 
-        return image, target
+        if target is not None:
+            return (image, target, *others) if others else (image, target)
+        else:
+            return image
 
 
 @register()
@@ -196,15 +212,34 @@ class FisheyeEdgeStretchCrop:
         self.scale_y = scale_y
 
     def __call__(self, inputs):
-        image, target = inputs
+        # Unpack inputs robustly
+        if isinstance(inputs, (tuple, list)):
+            image = inputs[0]
+            target = inputs[1] if len(inputs) > 1 else None
+            others = inputs[2:] if len(inputs) > 2 else []
+        else:
+            image = inputs
+            target = None
+            others = []
+
         if torch.rand(1).item() > self.stretch_prob:
-            return image, target
+            # Return unchanged, same format
+            if target is not None:
+                return (image, target, *others) if others else (image, target)
+            else:
+                return image
 
         _, h, w = image.shape
         mid_y = h // 2
+
         top = F.resize(image[:, :mid_y, :], [int(mid_y * self.scale_y)])
         bottom = F.resize(image[:, mid_y:, :], [int(mid_y * self.scale_y)])
         image = torch.cat([top, bottom], dim=1)
         image = F.resize(image, [h, w])
 
-        return image, target
+        # TODO: Adjust target["boxes"] if needed
+
+        if target is not None:
+            return (image, target, *others) if others else (image, target)
+        else:
+            return image
