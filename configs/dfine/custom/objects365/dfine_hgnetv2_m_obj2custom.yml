@@ -8,21 +8,24 @@ __include__: [
 
 output_dir: ./output/dfine_hgnetv2_m_obj2custom
 
-DFINE:  
-  backbone: TorchVisionModel  # Change from HGNetv2 to TorchVisionModel  
-  
-TorchVisionModel:  # Add this section  
-  name: 'swin_v2_t'  # Specify the Swin-L model  
-  weights: 'DEFAULT'  
-  return_layers: {'features.1': '0', 'features.3': '1', 'features.5': '2'}  # Map layer names to indices
+DFINE:
+  backbone: HGNetv2
+
+HGNetv2:
+  name: 'B2'
+  return_idx: [1, 2, 3]
+  freeze_at: -1
+  freeze_norm: False
+  use_lab: True
+  pretrained: False
 
 DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
-HybridEncoder:  
-  in_channels: [192, 384, 768]  # Adjust these based on Swin V2 Tiny output channels  
-  hidden_dim: 256  
+HybridEncoder:
+  in_channels: [384, 768, 1536]
+  hidden_dim: 256
   depth_mult: 0.67
 
 optimizer:
