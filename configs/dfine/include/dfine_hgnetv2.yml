@@ -8,20 +8,18 @@ use_focal_loss: True
 eval_spatial_size: [960, 960] # h w
 
 DFINE:
-  backbone: TorchVisionModel
+  backbone: HGNetv2
   encoder: HybridEncoder
   decoder: DFINETransformer
 
-TorchVisionModel:
-  name: swin_v2_t
-  return_layers: ['3', '5', '7']
-  weights: DEFAULT
-  
+HGNetv2:
+  pretrained: True
+  local_model_dir: weight/hgnetv2/
+
 HybridEncoder:
   in_channels: [512, 1024, 2048]
   feat_strides: [8, 16, 32]
   
-
   # intra
   hidden_dim: 256
   use_encoder_idx: [2]
