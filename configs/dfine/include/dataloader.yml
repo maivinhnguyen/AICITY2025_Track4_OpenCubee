@@ -11,8 +11,8 @@ train_dataloader:
         - {type: CopyPaste, p: 0.5, blend: True, sigma: 1.0, min_area: 0.01}
         - {type: SanitizeBoundingBoxes, min_size: 1}  # Before resize
         - {type: RandomHorizontalFlip}
-        - {type: Mosaic, p: 1.0}  # mosaic: 1.0  
-        - {type: MixUp, alpha: 0.2, p: 0.2}  # mixup: 0.2
+        - {type: Mosaic} 
+        - {type: MixUp, alpha: 0.2, p: 0.2}
         - {type: Resize, size: [960, 960]}  # Slightly bigger helps tiny objects
         - {type: SanitizeBoundingBoxes, min_size: 2}
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
