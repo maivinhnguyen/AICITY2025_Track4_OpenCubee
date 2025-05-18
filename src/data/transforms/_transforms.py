@@ -239,24 +239,31 @@ class CopyPaste(T.Transform):
         return transformed if len(transformed) > 1 else transformed[0]
 
 @register()  
-class RandomHSV(T.Transform):  
-    def __init__(self, h=0.015, s=0.5, v=0.4, p=0.5):  
+class MixUp(T.Transform):  
+    def __init__(self, alpha=0.2, p=0.2):  
         super().__init__()  
-        self.h = h  
-        self.s = s  
-        self.v = v  
+        self.alpha = alpha  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        # MixUp implementation would go here  
+        # This is a complex transform that requires multiple images  
+        # For a full implementation, we would need to modify the dataloader  
+        return inpt
+
+@register()  
+class RandomScale(T.Transform):  
+    def __init__(self, scale=0.3, p=0.5):  
+        super().__init__()  
+        self.scale = scale  
         self.p = p  
       
     def _transform(self, inpt, params):  
         if random.random() < self.p:  
-            h_factor = random.uniform(-self.h, self.h)  
-            s_factor = random.uniform(1 - self.s, 1 + self.s)  
-            v_factor = random.uniform(1 - self.v, 1 + self.v)  
+            scale_factor = random.uniform(1 - self.scale, 1 + self.scale)  
               
-            # Convert to HSV, apply changes, convert back to RGB  
-            inpt = F.adjust_hue(inpt, h_factor)  
-            inpt = F.adjust_saturation(inpt, s_factor)  
-            inpt = F.adjust_brightness(inpt, v_factor)  
+            # Apply scaling  
+            inpt = F.affine(inpt, angle=0, translate=(0, 0), scale=scale_factor, shear=0)  
           
-        return inpt
+        return inpt 
  
