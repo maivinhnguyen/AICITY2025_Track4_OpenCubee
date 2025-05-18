@@ -259,39 +259,4 @@ class RandomHSV(T.Transform):
             inpt = F.adjust_brightness(inpt, v_factor)  
           
         return inpt
-
-@register()  
-class RandomTranslate(T.Transform):  
-    def __init__(self, translate=0.05, p=0.5):  
-        super().__init__()  
-        self.translate = translate  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        if random.random() < self.p:  
-            height, width = inpt.size[::-1]  
-            max_dx = self.translate * width  
-            max_dy = self.translate * height  
-            tx = random.uniform(-max_dx, max_dx)  
-            ty = random.uniform(-max_dy, max_dy)  
-              
-            # Apply translation  
-            inpt = F.affine(inpt, angle=0, translate=(tx, ty), scale=1.0, shear=0)  
-          
-        return inpt  
-  
-@register()  
-class RandomScale(T.Transform):  
-    def __init__(self, scale=0.3, p=0.5):  
-        super().__init__()  
-        self.scale = scale  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        if random.random() < self.p:  
-            scale_factor = random.uniform(1 - self.scale, 1 + self.scale)  
-              
-            # Apply scaling  
-            inpt = F.affine(inpt, angle=0, translate=(0, 0), scale=scale_factor, shear=0)  
-          
-        return inpt  
+ 

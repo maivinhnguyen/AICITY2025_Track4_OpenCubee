@@ -3,7 +3,6 @@ train_dataloader:
     transforms:
       ops:
         - {type: RandomHSV, h: 0.015, s: 0.5, v: 0.4, p: 0.5}
-        - {type: RandomTranslate, translate: 0.05, p: 0.5}
         - {type: RandomPerspective, distortion_scale: 0.0005, p: 0.5}  
         - {type: RandomPhotometricDistort, p: 0.5}
         - {type: RandomAffine, degrees: 0, translate: [0.05, 0.05], scale: [0.9, 1.1], shear: [0, 0]}
