@@ -42,7 +42,7 @@ SanitizeBoundingBoxes = register(name="SanitizeBoundingBoxes")(SanitizeBoundingB
 RandomCrop = register()(T.RandomCrop)
 Normalize = register()(T.Normalize)
 RandomRotation = register()(T.RandomRotation)
-
+RandomPerspective = register()(T.RandomPerspective)
 
 @register()
 class EmptyTransform(T.Transform):
@@ -295,33 +295,3 @@ class RandomScale(T.Transform):
             inpt = F.affine(inpt, angle=0, translate=(0, 0), scale=scale_factor, shear=0)  
           
         return inpt  
-  
-@register()  
-class RandomPerspective(T.RandomPerspective):  
-    pass  # Already exists in torchvision, just register it  
-  
-# Register advanced augmentations  
-@register()  
-class Mosaic(T.Transform):  
-    def __init__(self, p=1.0):  
-        super().__init__()  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        # Mosaic implementation would go here  
-        # This is a complex transform that requires multiple images  
-        # For a full implementation, we would need to modify the dataloader  
-        return inpt  
-  
-@register()  
-class MixUp(T.Transform):  
-    def __init__(self, alpha=0.2, p=0.2):  
-        super().__init__()  
-        self.alpha = alpha  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        # MixUp implementation would go here  
-        # This is a complex transform that requires multiple images  
-        # For a full implementation, we would need to modify the dataloader  
-        return inpt
