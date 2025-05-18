@@ -41,6 +41,7 @@ RandomAffine = register()(T.RandomAffine)
 SanitizeBoundingBoxes = register(name="SanitizeBoundingBoxes")(SanitizeBoundingBoxes)
 RandomCrop = register()(T.RandomCrop)
 Normalize = register()(T.Normalize)
+RandomRotation = register()(T.RandomRotation)
 
 
 @register()
@@ -237,3 +238,90 @@ class CopyPaste(T.Transform):
                   
         return transformed if len(transformed) > 1 else transformed[0]
 
+@register()  
+class RandomHSV(T.Transform):  
+    def __init__(self, h=0.015, s=0.5, v=0.4, p=0.5):  
+        super().__init__()  
+        self.h = h  
+        self.s = s  
+        self.v = v  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        if random.random() < self.p:  
+            h_factor = random.uniform(-self.h, self.h)  
+            s_factor = random.uniform(1 - self.s, 1 + self.s)  
+            v_factor = random.uniform(1 - self.v, 1 + self.v)  
+              
+            # Convert to HSV, apply changes, convert back to RGB  
+            inpt = F.adjust_hue(inpt, h_factor)  
+            inpt = F.adjust_saturation(inpt, s_factor)  
+            inpt = F.adjust_brightness(inpt, v_factor)  
+          
+        return inpt
+
+@register()  
+class RandomTranslate(T.Transform):  
+    def __init__(self, translate=0.05, p=0.5):  
+        super().__init__()  
+        self.translate = translate  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        if random.random() < self.p:  
+            height, width = inpt.size[::-1]  
+            max_dx = self.translate * width  
+            max_dy = self.translate * height  
+            tx = random.uniform(-max_dx, max_dx)  
+            ty = random.uniform(-max_dy, max_dy)  
+              
+            # Apply translation  
+            inpt = F.affine(inpt, angle=0, translate=(tx, ty), scale=1.0, shear=0)  
+          
+        return inpt  
+  
+@register()  
+class RandomScale(T.Transform):  
+    def __init__(self, scale=0.3, p=0.5):  
+        super().__init__()  
+        self.scale = scale  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        if random.random() < self.p:  
+            scale_factor = random.uniform(1 - self.scale, 1 + self.scale)  
+              
+            # Apply scaling  
+            inpt = F.affine(inpt, angle=0, translate=(0, 0), scale=scale_factor, shear=0)  
+          
+        return inpt  
+  
+@register()  
+class RandomPerspective(T.RandomPerspective):  
+    pass  # Already exists in torchvision, just register it  
+  
+# Register advanced augmentations  
+@register()  
+class Mosaic(T.Transform):  
+    def __init__(self, p=1.0):  
+        super().__init__()  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        # Mosaic implementation would go here  
+        # This is a complex transform that requires multiple images  
+        # For a full implementation, we would need to modify the dataloader  
+        return inpt  
+  
+@register()  
+class MixUp(T.Transform):  
+    def __init__(self, alpha=0.2, p=0.2):  
+        super().__init__()  
+        self.alpha = alpha  
+        self.p = p  
+      
+    def _transform(self, inpt, params):  
+        # MixUp implementation would go here  
+        # This is a complex transform that requires multiple images  
+        # For a full implementation, we would need to modify the dataloader  
+        return inpt
