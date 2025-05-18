@@ -47,7 +47,7 @@ optimizer:
   weight_decay: 0.000125
 
 
-epochs: 50 # Early stop
+epochs: 46 # Early stop
 train_dataloader:
   dataset:
     transforms:
