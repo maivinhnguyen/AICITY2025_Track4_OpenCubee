@@ -2,7 +2,7 @@ train_dataloader:
   dataset:
     transforms:
       ops:
-        - {type: RandomRotation, degrees: 5.0, p: 0.5}
+        - {type: RandomRotation, degrees: 5.0}
         - {type: RandomScale, scale: 0.3, p: 0.5}
         - {type: RandomPerspective, distortion_scale: 0.0005, p: 0.5}  
         - {type: RandomPhotometricDistort, p: 0.5}
