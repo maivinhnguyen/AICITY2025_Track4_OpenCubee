@@ -23,10 +23,12 @@ DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
-HybridEncoder:
-  in_channels: [384, 768, 1536]
-  hidden_dim: 256
-  depth_mult: 0.67
+BiFPNEncoder:  
+  in_channels: [384, 768, 1536]  # Keep the same input channels from HGNetv2-B2  
+  hidden_dim: 256  # Start with the same as your current config  
+  num_bifpn_layers: 4  # More layers for better feature fusion  
+  weighted_fusion: True  # Enable weighted feature fusion  
+  attention_type: "spatial"  # Add spatial attention to focus on distorted regions
 
 optimizer:
   type: AdamW
