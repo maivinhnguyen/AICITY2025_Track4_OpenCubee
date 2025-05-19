@@ -9,3 +9,4 @@ from .dfine_decoder import DFINETransformer
 from .hybrid_encoder import HybridEncoder
 from .matcher import HungarianMatcher
 from .postprocessor import DFINEPostProcessor
+from .bifpn_encoder import BiFPNEncoder
