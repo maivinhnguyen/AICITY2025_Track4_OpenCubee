@@ -3,7 +3,7 @@ __include__: [
   '../../../runtime.yml',
   '../../include/dataloader.yml',
   '../../include/optimizer.yml',
-  '../../include/dfine_hgnetv2.yml',
+  '../../include/dfine_hgnetv2_bifpn.yml',
 ]
 
 output_dir: ./output/dfine_hgnetv2_m_obj2custom
@@ -24,11 +24,12 @@ DFINETransformer:
   eval_idx: -1  # -2 -3
 
 BiFPNEncoder:  
-  in_channels: [384, 768, 1536]  # Keep the same input channels from HGNetv2-B2  
-  hidden_dim: 256  # Start with the same as your current config  
-  num_bifpn_layers: 4  # More layers for better feature fusion  
+  in_channels: [384, 768, 1536]  # Same as your current HybridEncoder  
+  hidden_dim: 256  # Same as your current HybridEncoder  
+  num_bifpn_layers: 4  # Recommended for fisheye8k dataset  
   weighted_fusion: True  # Enable weighted feature fusion  
-  attention_type: "spatial"  # Add spatial attention to focus on distorted regions
+  use_attention: True  # Enable spatial attention for better focus on distorted regions  
+  act: "silu"  # Same activation as in HybridEncoder
 
 optimizer:
   type: AdamW
