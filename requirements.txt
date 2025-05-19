@@ -6,4 +6,3 @@ tensorboard
 scipy
 calflops
 transformers
-loguru

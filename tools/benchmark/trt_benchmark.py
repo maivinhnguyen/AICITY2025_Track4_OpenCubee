@@ -2,41 +2,38 @@
 Copyright (c) 2024 The D-FINE Authors. All Rights Reserved.
 """
 
-import argparse
-import glob
+import tensorrt as trt
+import pycuda.driver as cuda
+from utils import TimeProfiler
+import numpy as np
 import os
 import time
-from collections import OrderedDict, namedtuple
-
-import numpy as np
-import pycuda.driver as cuda
-import tensorrt as trt
 import torch
+
+from collections import namedtuple, OrderedDict
+import glob
+import argparse
 from dataset import Dataset
 from tqdm import tqdm
-from utils import TimeProfiler
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Argument Parser Example")
-    parser.add_argument(
-        "--infer_dir",
-        type=str,
-        default="/data/COCO2017/val2017",
-        help="Directory for images to perform inference on.",
-    )
-    parser.add_argument("--engine_dir", type=str, help="Directory containing model engine files.")
-    parser.add_argument(
-        "--busy", action="store_true", help="Flag to indicate that other processes may be running."
-    )
+    parser = argparse.ArgumentParser(description='Argument Parser Example')
+    parser.add_argument('--COCO_dir',
+                        type=str,
+                        default='/data/COCO2017/val2017',
+                        help="Directory for images to perform inference on.")
+    parser.add_argument("--engine_dir",
+                        type=str,
+                        help="Directory containing model engine files.")
+    parser.add_argument('--busy',
+                        action='store_true',
+                        help="Flag to indicate that other processes may be running.")
     args = parser.parse_args()
     return args
 
-
 class TRTInference(object):
-    def __init__(
-        self, engine_path, device="cuda", backend="torch", max_batch_size=32, verbose=False
-    ):
+    def __init__(self, engine_path, device='cuda', backend='torch', max_batch_size=32, verbose=False):
         self.engine_path = engine_path
         self.device = device
         self.backend = backend
@@ -45,14 +42,12 @@ class TRTInference(object):
         self.logger = trt.Logger(trt.Logger.VERBOSE) if verbose else trt.Logger(trt.Logger.INFO)
         self.engine = self.load_engine(engine_path)
         self.context = self.engine.create_execution_context()
-        self.bindings = self.get_bindings(
-            self.engine, self.context, self.max_batch_size, self.device
-        )
+        self.bindings = self.get_bindings(self.engine, self.context, self.max_batch_size, self.device)
         self.bindings_addr = OrderedDict((n, v.ptr) for n, v in self.bindings.items())
         self.input_names = self.get_input_names()
         self.output_names = self.get_output_names()
 
-        if self.backend == "cuda":
+        if self.backend == 'cuda':
             self.stream = cuda.Stream()
         self.time_profile = TimeProfiler()
         self.time_profile_dataset = TimeProfiler()
@@ -61,8 +56,8 @@ class TRTInference(object):
         self.dynamic = False
 
     def load_engine(self, path):
-        trt.init_libnvinfer_plugins(self.logger, "")
-        with open(path, "rb") as f, trt.Runtime(self.logger) as runtime:
+        trt.init_libnvinfer_plugins(self.logger, '')
+        with open(path, 'rb') as f, trt.Runtime(self.logger) as runtime:
             return runtime.deserialize_cuda_engine(f.read())
 
     def get_input_names(self):
@@ -80,7 +75,7 @@ class TRTInference(object):
         return names
 
     def get_bindings(self, engine, context, max_batch_size=32, device=None):
-        Binding = namedtuple("Binding", ("name", "dtype", "shape", "data", "ptr"))
+        Binding = namedtuple('Binding', ('name', 'dtype', 'shape', 'data', 'ptr'))
         bindings = OrderedDict()
         for i, name in enumerate(engine):
             shape = engine.get_tensor_shape(name)
@@ -92,7 +87,7 @@ class TRTInference(object):
                 if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                     context.set_input_shape(name, shape)
 
-            if self.backend == "cuda":
+            if self.backend == 'cuda':
                 if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                     data = np.random.randn(*shape).astype(dtype)
                     ptr = cuda.mem_alloc(data.nbytes)
@@ -134,15 +129,15 @@ class TRTInference(object):
         return outputs
 
     def __call__(self, blob):
-        if self.backend == "torch":
+        if self.backend == 'torch':
             return self.run_torch(blob)
-        elif self.backend == "cuda":
+        elif self.backend == 'cuda':
             return self.async_run_cuda(blob)
 
     def synchronize(self):
-        if self.backend == "torch" and torch.cuda.is_available():
+        if self.backend == 'torch' and torch.cuda.is_available():
             torch.cuda.synchronize()
-        elif self.backend == "cuda":
+        elif self.backend == 'cuda':
             self.stream.synchronize()
 
     def warmup(self, blob, n):
@@ -156,10 +151,10 @@ class TRTInference(object):
             self.time_profile.reset()
             with self.time_profile_dataset:
                 img = blob[i]
-                if img["images"] is not None:
-                    img["image"] = img["input"] = img["images"].unsqueeze(0)
+                if img['images'] is not None:
+                    img['image'] = img['input'] = img['images'].unsqueeze(0)
                 else:
-                    img["images"] = img["input"] = img["image"].unsqueeze(0)
+                    img['images'] = img['input'] = img['image'].unsqueeze(0)
             with self.time_profile:
                 _ = self(img)
             times.append(self.time_profile.total)
@@ -172,21 +167,20 @@ class TRTInference(object):
         avg_time = sum(times) / len(times)  # Calculate the average of the remaining times
         return avg_time
 
-
 def main():
     FLAGS = parse_args()
     dataset = Dataset(FLAGS.infer_dir)
     im = torch.ones(1, 3, 640, 640).cuda()
     blob = {
-        "image": im,
-        "images": im,
-        "input": im,
-        "im_shape": torch.tensor([640, 640]).to(im.device),
-        "scale_factor": torch.tensor([1, 1]).to(im.device),
-        "orig_target_sizes": torch.tensor([640, 640]).to(im.device),
-    }
+            'image': im,
+            'images': im,
+            'input': im,
+            'im_shape': torch.tensor([640, 640]).to(im.device),
+            'scale_factor': torch.tensor([1, 1]).to(im.device),
+            'orig_target_sizes': torch.tensor([640, 640]).to(im.device),
+        }
 
-    engine_files = glob.glob(os.path.join(FLAGS.engine_dir, "*.engine"))
+    engine_files = glob.glob(os.path.join(FLAGS.models_dir, "*.engine"))
     results = []
 
     for engine_file in engine_files:
@@ -209,6 +203,5 @@ def main():
     for engine_file, latency in sorted_results:
         print(f"Engine: {engine_file}, Latency: {latency:.2f} ms")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

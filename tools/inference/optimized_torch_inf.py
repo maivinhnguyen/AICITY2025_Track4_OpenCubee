@@ -22,7 +22,7 @@ import cv2
 # If torch_inf.py is in experiments/xxx/, this should work.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 # Use the original import from torch_inf.py
-from src.core import YAMLConfig
+from engine.core import YAMLConfig
 
 
 def get_image_Id(img_name):

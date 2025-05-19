@@ -1,0 +1,74 @@
+Loading Ground Truth from: /workspace/datasets/Fisheye8K_all_including_train&test/test/test.json
+Loading Predictions from: m_all_with_test_pred.json
+Using 10 IoU thresholds for averaged plots: ['0.50', '0.55', '0.60', '0.65', '0.70', '0.75', '0.80', '0.85', '0.90', '0.95'] (standard COCO 0.5-0.95 range).
+Evaluation started at: 2025-05-17 09:57:56
+
+--- Running Standard COCO Evaluation ---
+
+Standard COCO Metrics:
+AP @IoU=0.50:0.95 | area=all | maxDets=100   : 0.3916
+AP @IoU=0.50      | area=all | maxDets=100   : 0.6296
+AP @IoU=0.75      | area=all | maxDets=100   : 0.4181
+AP @IoU=0.50:0.95 | area=small | maxDets=100 : 0.2203
+AP @IoU=0.50:0.95 | area=medium | maxDets=100: 0.3717
+AP @IoU=0.50:0.95 | area=large | maxDets=100 : 0.6900
+AR @IoU=0.50:0.95 | area=all | maxDets=1     : 0.2478
+AR @IoU=0.50:0.95 | area=all | maxDets=10    : 0.4757
+AR @IoU=0.50:0.95 | area=all | maxDets=100   : 0.5140
+AR @IoU=0.50:0.95 | area=small | maxDets=100 : 0.3832
+AR @IoU=0.50:0.95 | area=medium | maxDets=100: 0.5010
+AR @IoU=0.50:0.95 | area=large | maxDets=100 : 0.8013
+
+--- Per-Class AP @IoU=0.5 ---
+AP@0.5 for Bus                 : 0.7711
+AP@0.5 for Bike                : 0.6545
+AP@0.5 for Car                 : 0.7771
+AP@0.5 for Pedestrian          : 0.4331
+AP@0.5 for Truck               : 0.5125
+
+--- Calculating Per-Class Average Max F1 Score (over IoUs: 0.50:0.05:0.95) ---
+
+--- Per-Class Average Max F1 Scores (over IoUs: 0.50:0.05:0.95) Results ---
+Bus                 : 0.6369
+Bike                : 0.3631
+Car                 : 0.5441
+Pedestrian          : 0.2923
+Truck               : 0.4310
+Saved bar chart to test_eval/avg_max_f1_std_coco_ious_per_class.png
+
+--- Generating data for P-R/F1-Conf curves (Averaged over IoUs: 0.50:0.05:0.95) ---
+
+--- Plotting Averaged Curves (Avg IoU 0.50:0.05:0.95) ---
+Optimal F1 for All Classes (Avg IoU 0.50:0.05:0.95): 0.4167 at confidence 0.5149
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_All_Classes.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_All_Classes.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_All_Classes.png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_All_Classes_(Avg_over_Classes).png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_Bus.png
+Optimal F1 for Bus (Avg IoU 0.50:0.05:0.95): 0.6318 at confidence 0.5166
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_Bus.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_Bus.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_Bus.png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_Bike.png
+Optimal F1 for Bike (Avg IoU 0.50:0.05:0.95): 0.3591 at confidence 0.4826
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_Bike.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_Bike.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_Bike.png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_Car.png
+Optimal F1 for Car (Avg IoU 0.50:0.05:0.95): 0.5352 at confidence 0.6083
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_Car.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_Car.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_Car.png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_Pedestrian.png
+Optimal F1 for Pedestrian (Avg IoU 0.50:0.05:0.95): 0.2916 at confidence 0.4458
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_Pedestrian.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_Pedestrian.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_Pedestrian.png
+Saved PR curve plot (Avg IoU 0.50:0.05:0.95) to test_eval/pr_curve_avg_iou_Truck.png
+Optimal F1 for Truck (Avg IoU 0.50:0.05:0.95): 0.4234 at confidence 0.6243
+Saved F1 vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/f1_conf_curve_avg_iou_Truck.png
+Saved Precision vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/precision_conf_curve_avg_iou_Truck.png
+Saved Recall vs. Confidence plot (Avg IoU 0.50:0.05:0.95) to test_eval/recall_conf_curve_avg_iou_Truck.png
+
+Evaluation finished at: 2025-05-17 09:58:34
+Total evaluation time: 0:00:38.562268

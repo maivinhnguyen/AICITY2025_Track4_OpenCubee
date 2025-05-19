@@ -1,0 +1,43 @@
+__include__: [
+  './dfine_hgnetv2_s_fish_vis.yml',
+  '../base/deim.yml'
+]
+
+output_dir: ./outputs/deim_hgnetv2_s_fish_vis
+
+optimizer:
+  type: AdamW
+  params: 
+    -
+      params: '^(?=.*backbone)(?!.*bn).*$'
+      lr: 0.00003125
+    - 
+      params: '^(?=.*(?:norm|bn)).*$'
+      weight_decay: 0.
+
+  lr: 0.0000625
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+
+# Increase to search for the optimal ema
+epoches: 60 # 120 + 4n
+
+## Our LR-Scheduler
+flat_epoch: 34   # 4 + epoch // 2, e.g., 40 = 4 + 72 / 2
+no_aug_epoch: 4
+
+## Our DataAug
+train_dataloader: 
+  dataset: 
+    transforms:
+      policy:
+        epoch: [4, 28, 56]   # list 
+        
+
+  collate_fn:
+    mixup_epochs: [4, 28]
+    stop_epoch: 90
+  
+lr_warmup_scheduler:
+  warmup_duration: 0

@@ -1,3 +1,2 @@
 onnxruntime
 tensorrt
-openvino

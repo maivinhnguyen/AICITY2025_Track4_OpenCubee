@@ -1,0 +1,40 @@
+task: detection
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', ]
+
+num_classes: 5 # your dataset classes
+remap_mscoco_category: False
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /workspace/datasets/Fisheyeday_visdrone_vipcupday/train/images_resized
+    ann_file: /workspace/datasets/Fisheyeday_visdrone_vipcupday/train/train_resized.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: True
+  num_workers: 12
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: /workspace/datasets/Fisheyeday_visdrone_vipcupday/val/images_resized
+    ann_file: /workspace/datasets/Fisheyeday_visdrone_vipcupday/val/val_resized.json
+    return_masks: False
+    transforms:
+      type: Compose
+      ops: ~
+  shuffle: False
+  num_workers: 12
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction

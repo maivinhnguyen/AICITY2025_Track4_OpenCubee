@@ -4,15 +4,15 @@ evaluator:
   type: CocoEvaluator
   iou_types: ['bbox', ]
 
-num_classes: 5 # your dataset classes
+num_classes: 777 # your dataset classes
 remap_mscoco_category: False
 
 train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/train/images
-    ann_file: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/train/train.json
+    img_folder: /data/yourdataset/train
+    ann_file: /data/yourdataset/train/train.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/val/images
-    ann_file: /workspace/datasets/fisheye8K_visdrone_vipcupnight2k_grayscale/val/val.json
+    img_folder: /data/yourdataset/val
+    ann_file: /data/yourdataset/val/val.json
     return_masks: False
     transforms:
       type: Compose
