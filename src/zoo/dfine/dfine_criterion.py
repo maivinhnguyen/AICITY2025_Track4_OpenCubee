@@ -229,6 +229,124 @@ class DFINECriterion(nn.Module):
                     ) / (self.num_pos + self.num_neg)
 
         return losses
+    
+    def loss_peripheral(self, outputs, targets, indices, num_boxes):  
+        """  
+        Compute Peripheral Focus Loss to emphasize object boundaries.  
+        This loss gives more weight to the peripheral regions of objects.  
+        """  
+        losses = {}  
+        
+        if "pred_corners" in outputs:  
+            idx = self._get_src_permutation_idx(indices)  
+            target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  
+            
+            pred_corners = outputs["pred_corners"][idx].reshape(-1, (self.reg_max + 1))  
+            ref_points = outputs["ref_points"][idx].detach()  
+            
+            # Get target corners (same as in loss_local)  
+            with torch.no_grad():  
+                if self.fgl_targets_dn is None and "is_dn" in outputs:  
+                    self.fgl_targets_dn = bbox2distance(  
+                        ref_points,  
+                        box_cxcywh_to_xyxy(target_boxes),  
+                        self.reg_max,  
+                        outputs["reg_scale"],  
+                        outputs["up"],  
+                    )  
+                if self.fgl_targets is None and "is_dn" not in outputs:  
+                    self.fgl_targets = bbox2distance(  
+                        ref_points,  
+                        box_cxcywh_to_xyxy(target_boxes),  
+                        self.reg_max,  
+                        outputs["reg_scale"],  
+                        outputs["up"],  
+                    )  
+            
+            target_corners, weight_right, weight_left = (  
+                self.fgl_targets_dn if "is_dn" in outputs else self.fgl_targets  
+            )  
+            
+            # Calculate peripheral weights  
+            peripheral_weight = self._calculate_peripheral_weight(  
+                pred_corners,   
+                target_corners,   
+                ref_points,   
+                target_boxes  
+            )  
+            
+            # Apply peripheral focus loss  
+            # We use the same unimodal distribution focal loss but with peripheral weighting  
+            losses["loss_peripheral"] = self.unimodal_distribution_focal_loss(  
+                pred_corners,  
+                target_corners,  
+                weight_right,  
+                weight_left,  
+                peripheral_weight,  # Use peripheral weights instead of IoU-based weights  
+                avg_factor=num_boxes,  
+            )  
+        
+        return losses
+    
+    def _calculate_peripheral_weight(self, pred_corners, target_corners, ref_points, target_boxes):  
+        """  
+        Calculate weights that emphasize peripheral regions of objects.  
+        
+        Args:  
+            pred_corners: Predicted distribution for box corners  
+            target_corners: Target distribution for box corners  
+            ref_points: Reference points (initial box predictions)  
+            target_boxes: Ground truth bounding boxes  
+            
+        Returns:  
+            peripheral_weight: Weights emphasizing peripheral regions  
+        """  
+        # Convert boxes to xyxy format for easier edge calculations  
+        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)  
+        
+        # Calculate distance from each point to the nearest edge of the ground truth box  
+        # This creates a distance field where points closer to edges have smaller values  
+        batch_size, num_queries = ref_points.shape[:2]  
+        
+        # Initialize distance tensor  
+        edge_distances = torch.zeros_like(pred_corners[:, 0])  
+        
+        # For each box edge (top, bottom, left, right), calculate distance  
+        for i in range(batch_size):  
+            for j in range(num_queries):  
+                # Extract box coordinates  
+                x1, y1, x2, y2 = target_boxes_xyxy[i, j]  
+                
+                # Calculate distance to each edge  
+                dist_left = torch.abs(ref_points[i, j, 0] - x1)  
+                dist_right = torch.abs(ref_points[i, j, 0] - x2)  
+                dist_top = torch.abs(ref_points[i, j, 1] - y1)  
+                dist_bottom = torch.abs(ref_points[i, j, 1] - y2)  
+                
+                # Find minimum distance to any edge  
+                min_dist = torch.min(torch.stack([dist_left, dist_right, dist_top, dist_bottom]))  
+                edge_distances[i, j] = min_dist  
+        
+        # Normalize distances to [0, 1] range  
+        max_dist = torch.max(edge_distances)  
+        if max_dist > 0:  
+            normalized_distances = edge_distances / max_dist  
+        else:  
+            normalized_distances = edge_distances  
+        
+        # Convert distances to weights - points closer to edges get higher weights  
+        # Using exponential decay function: weight = exp(-α * normalized_distance)  
+        alpha = 5.0  # Controls how quickly weight decreases with distance  
+        peripheral_weight = torch.exp(-alpha * normalized_distances)  
+        
+        # Apply additional weighting based on prediction confidence  
+        # Points with higher prediction confidence get higher weights  
+        pred_confidence = F.softmax(pred_corners, dim=1).max(dim=1)[0]  
+        
+        # Combine peripheral weight with confidence  
+        combined_weight = peripheral_weight * pred_confidence  
+        
+        return combined_weight
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
@@ -276,6 +394,7 @@ class DFINECriterion(nn.Module):
             "focal": self.loss_labels_focal,
             "vfl": self.loss_labels_vfl,
             "local": self.loss_local,
+            "peripheral": self.loss_peripheral,
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
