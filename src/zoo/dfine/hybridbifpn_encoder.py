@@ -122,8 +122,18 @@ class BiFPNBlock(nn.Module):
             # Get corresponding top-down feature and original feature  
             idx = len(features) - 2 - i  # Index for accessing the correct top-down feature  
             
+            # Ensure all features have the same spatial dimensions  
+            target_shape = original_features[idx].shape[2:]  
+            if downsample_feat.shape[2:] != target_shape:  
+                downsample_feat = F.interpolate(downsample_feat, size=target_shape, mode="nearest")  
+            
+            if td_features[idx].shape[2:] != target_shape:  
+                td_feat_resized = F.interpolate(td_features[idx], size=target_shape, mode="nearest")  
+            else:  
+                td_feat_resized = td_features[idx]  
+            
             # Weighted fusion of downsampled feature, top-down feature, and original feature  
-            fused = self.bu_weights[i](downsample_feat, td_features[idx], original_features[idx])  
+            fused = self.bu_weights[i](downsample_feat, td_feat_resized, original_features[idx])  
             
             # Apply convolution  
             bu_feature = self.bu_convs[i](fused)  
