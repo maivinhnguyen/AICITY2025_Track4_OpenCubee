@@ -23,29 +23,11 @@ DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
-BHybridBiFPNEncoder:  
-  in_channels: [384, 768, 1536]  
-  feat_strides: [8, 16, 32]  
+HybridBiFPNEncoder:  
+  in_channels: [384, 768, 1536]  # Keep the same in_channels as the original HybridEncoder  
   hidden_dim: 256  
   depth_mult: 0.67  
-    
-  # HybridEncoder parameters  
-  use_encoder_idx: [2]
-  num_encoder_layers: 1
-  nhead: 8
-  dim_feedforward: 1024
-  dropout: 0.
-  enc_act: 'gelu'
-  expansion: 0.34
-  depth_mult: 1   
-    
-  # BiFPN parameters  
-  num_bifpn_layers: 3  
-  weighted_fusion: True  
-  use_attention: True  
-  attention_type: "spatial"  
-  act: "silu"  
-  dropout: 0.0
+  num_bifpn_blocks: 3  # Add this new parameter
 
 optimizer:
   type: AdamW
