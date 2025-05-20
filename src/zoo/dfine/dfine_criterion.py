@@ -230,57 +230,50 @@ class DFINECriterion(nn.Module):
 
         return losses
     
-    def loss_peripheral(pred_dist, gt_boxes, ref_points, bin_count=14, radius=1.0, max_dis=64):
-        """
-        Peripheral Focus Loss as described in the provided algorithm.
+    def loss_peripheral(self, outputs, targets, indices, num_boxes, T=5):
+        """Peripheral Focus Loss (PFL): Encourages more attention to peripheral bins of the distribution."""
+        losses = {}
+        if "pred_corners" not in outputs:
+            return losses  # no corner distribution predictions
 
-        pred_dist: (B, 4, bin_count) – predicted distributions for l, t, r, b
-        gt_boxes: (B, 4) – ground truth boxes in (x1, y1, x2, y2)
-        ref_points: (B, 2) – reference points (anchor centers)
-        """
+        idx = self._get_src_permutation_idx(indices)
+        pred_corners = outputs["pred_corners"][idx].reshape(-1, (self.reg_max + 1))
 
-        def bbox2distance(points, boxes, max_dis):
-            left = (points[:, 0] - boxes[:, 0]).clamp(min=0, max=max_dis)
-            top = (points[:, 1] - boxes[:, 1]).clamp(min=0, max=max_dis)
-            right = (boxes[:, 2] - points[:, 0]).clamp(min=0, max=max_dis)
-            bottom = (boxes[:, 3] - points[:, 1]).clamp(min=0, max=max_dis)
-            return torch.stack([left, top, right, bottom], dim=1)  # (B, 4)
+        # Calculate soft target distributions
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        ref_points = outputs["ref_points"][idx].detach()
 
-        def distance2weight(distances, radius):
-            B = distances.size(0)
-            soft_targets = torch.zeros(B, bin_count, device=distances.device)
-            for i in range(B):
-                d = distances[i].item()
-                lower = int(torch.floor(torch.tensor(d)))
-                upper = lower + 1
-                if 0 <= lower < bin_count:
-                    soft_targets[i, lower] += upper - d
-                if 0 <= upper < bin_count:
-                    soft_targets[i, upper] += d - lower
-            return soft_targets
+        with torch.no_grad():
+            target_corners, _, _ = bbox2distance(
+                ref_points,
+                box_cxcywh_to_xyxy(target_boxes),
+                self.reg_max,
+                outputs["reg_scale"],
+                outputs["up"],
+            )
 
-        B = pred_dist.size(0)
-        total_loss = 0.0
+        # Step 1: Peripheral weight vector (based on bin distance from center)
+        bin_range = torch.arange(self.reg_max + 1, device=pred_corners.device)
+        bin_center = (self.reg_max / 2)
+        peripheral_weight = torch.abs(bin_range - bin_center) / bin_center  # [0, 1]
 
-        corner_distances = bbox2distance(ref_points, gt_boxes, max_dis=max_dis)  # (B, 4)
+        # Step 2: Compute softmax temperature for predicted and target corners
+        pred_prob = F.log_softmax(pred_corners / T, dim=1)
+        target_prob = F.softmax(target_corners / T, dim=1)
 
-        for corner_idx in range(4):  # l, t, r, b
-            dists = corner_distances[:, corner_idx]  # (B,)
-            soft_targets = distance2weight(dists, radius=radius)  # (B, bin_count)
+        # Step 3: Compute KL divergence per sample
+        loss_kl = F.kl_div(pred_prob, target_prob, reduction="none").sum(dim=1)
 
-            max_bin_indices = torch.argmax(soft_targets, dim=1)  # (B,)
-            bin_range = torch.arange(bin_count, device=pred_dist.device).unsqueeze(0)  # (1, bin_count)
-            peripheral_weights = torch.abs(bin_range - max_bin_indices.unsqueeze(1))  # (B, bin_count)
+        # Step 4: Apply peripheral weighting
+        peripheral_scaling = peripheral_weight.unsqueeze(0).expand_as(target_prob)
+        weighted_target_prob = target_prob * peripheral_scaling
+        weighted_target_prob = weighted_target_prob / (weighted_target_prob.sum(dim=1, keepdim=True) + 1e-6)
 
-            weighted_target = soft_targets * peripheral_weights  # (B, bin_count)
-            weighted_target = F.normalize(weighted_target, p=1, dim=1)
+        weighted_kl = F.kl_div(pred_prob, weighted_target_prob, reduction="none").sum(dim=1)
+        final_loss = (loss_kl + weighted_kl).mean()
 
-            pred_probs = F.softmax(pred_dist[:, corner_idx, :], dim=-1)  # (B, bin_count)
-
-            kl_loss = F.kl_div(pred_probs.log(), weighted_target, reduction='batchmean')
-            total_loss += kl_loss
-
-        return total_loss / 4
+        losses["loss_peripheral"] = final_loss * outputs["pred_boxes"].shape[1] / num_boxes
+        return losses
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
