@@ -10,3 +10,4 @@ from .hybrid_encoder import HybridEncoder
 from .matcher import HungarianMatcher
 from .postprocessor import DFINEPostProcessor
 from .bifpn_encoder import BiFPNEncoder
+from .hybrid_bifpn_encoder import HybridBiFPNEncoder
