@@ -268,12 +268,12 @@ class DFINECriterion(nn.Module):
         ious_diag = torch.diag(ious).detach()
 
         # Apply higher weight to peripheral box misalignment
-        weight = 1.0 + 2.0 * peripheral_mask  # 3x weight on peripheral prediction error
+        weight = 0.5 + 0.5 * peripheral_mask  # 3x weight on peripheral prediction error
 
         # Use GIoU loss as base
         giou_loss = 1 - torch.diag(generalized_box_iou(pred_boxes_xyxy, target_boxes_xyxy))
 
-        loss_periph = (giou_loss * weight).sum() / num_boxes
+        loss_periph = (giou_loss * weight).sum() / weight.sum().clamp(min=1.0)
 
         return {"loss_peripheral": loss_periph}
 
