@@ -267,7 +267,7 @@ class DFINECriterion(nn.Module):
                 self.fgl_targets_dn if "is_dn" in outputs else self.fgl_targets  
             )  
             
-            # Calculate peripheral weights  
+            # Calculate peripheral weights - ensure all tensors are properly flattened  
             peripheral_weight = self._calculate_peripheral_weight(  
                 pred_corners,   
                 target_corners,   
@@ -276,7 +276,6 @@ class DFINECriterion(nn.Module):
             )  
             
             # Apply peripheral focus loss  
-            # We use the same unimodal distribution focal loss but with peripheral weighting  
             losses["loss_peripheral"] = self.unimodal_distribution_focal_loss(  
                 pred_corners,  
                 target_corners,  
@@ -304,28 +303,29 @@ class DFINECriterion(nn.Module):
         # Convert boxes to xyxy format for easier edge calculations  
         target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)  
         
-        # Calculate distance from each point to the nearest edge of the ground truth box  
-        # This creates a distance field where points closer to edges have smaller values  
-        batch_size, num_queries = ref_points.shape[:2]  
-        
-        # Initialize distance tensor  
+        # Initialize distance tensor - match the shape of pred_corners first dimension  
         edge_distances = torch.zeros_like(pred_corners[:, 0])  
         
-        # For each box edge (top, bottom, left, right), calculate distance  
-        for i in range(batch_size):  
-            for j in range(num_queries):  
-                # Extract box coordinates  
-                x1, y1, x2, y2 = target_boxes_xyxy[i, j]  
-                
-                # Calculate distance to each edge  
-                dist_left = torch.abs(ref_points[i, j, 0] - x1)  
-                dist_right = torch.abs(ref_points[i, j, 0] - x2)  
-                dist_top = torch.abs(ref_points[i, j, 1] - y1)  
-                dist_bottom = torch.abs(ref_points[i, j, 1] - y2)  
-                
-                # Find minimum distance to any edge  
-                min_dist = torch.min(torch.stack([dist_left, dist_right, dist_top, dist_bottom]))  
-                edge_distances[i, j] = min_dist  
+        # Calculate distance from each point to the nearest edge of the ground truth box  
+        # This creates a distance field where points closer to edges have smaller values  
+        
+        # Instead of iterating through each box, use vectorized operations  
+        # Extract box coordinates - target_boxes_xyxy should be shape [N, 4]  
+        x1 = target_boxes_xyxy[:, 0]  
+        y1 = target_boxes_xyxy[:, 1]  
+        x2 = target_boxes_xyxy[:, 2]  
+        y2 = target_boxes_xyxy[:, 3]  
+        
+        # Calculate distance to each edge - ref_points should be shape [N, 2]  
+        dist_left = torch.abs(ref_points[:, 0] - x1)  
+        dist_right = torch.abs(ref_points[:, 0] - x2)  
+        dist_top = torch.abs(ref_points[:, 1] - y1)  
+        dist_bottom = torch.abs(ref_points[:, 1] - y2)  
+        
+        # Stack distances and find minimum for each point  
+        all_dists = torch.stack([dist_left, dist_right, dist_top, dist_bottom], dim=1)  
+        min_dists, _ = torch.min(all_dists, dim=1)  
+        edge_distances = min_dists  
         
         # Normalize distances to [0, 1] range  
         max_dist = torch.max(edge_distances)  
