@@ -230,46 +230,65 @@ class DFINECriterion(nn.Module):
 
         return losses
     
-    def loss_peripheral(self, outputs, targets, indices, num_boxes, T=5):
-        """Peripheral Focus Loss: encourages attention to peripheral bins of the predicted distribution"""
-        losses = {}
-        if "pred_corners" not in outputs:
-            return losses
-
+    def loss_peripheral(self, outputs, targets, indices, num_boxes):
+        """
+        Peripheral Focus Loss (based on ProbIoU + focus on small/far objects).
+        """
+        assert "pred_boxes" in outputs
         idx = self._get_src_permutation_idx(indices)
-        pred_corners = outputs["pred_corners"][idx].reshape(-1, self.reg_max + 1)
 
-        # Prepare target corner distributions
-        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
-        ref_points = outputs["ref_points"][idx].detach()
+        src_boxes = outputs["pred_boxes"][idx]  # [N, 4] in cxcywh
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  # [N, 4]
 
-        with torch.no_grad():
-            target_corners, _, _ = bbox2distance(
-                ref_points,
-                box_cxcywh_to_xyxy(target_boxes),
-                self.reg_max,
-                outputs["reg_scale"],
-                outputs["up"],
-            )
+        # Convert to mean and covariance of 2D Gaussian (assume no rotation)
+        def box_to_gaussian(boxes):
+            # center = μ, covariance = diag([w², h²]/12)
+            mean = boxes[:, :2]
+            wh = boxes[:, 2:]
+            cov = torch.zeros((boxes.shape[0], 2, 2), device=boxes.device)
+            cov[:, 0, 0] = (wh[:, 0] ** 2) / 12.0
+            cov[:, 1, 1] = (wh[:, 1] ** 2) / 12.0
+            return mean, cov
 
-        # Peripheral weights (center bin has low weight, peripheral bins have high weight)
-        device = pred_corners.device
-        bin_range = torch.arange(self.reg_max + 1, device=device).float()
-        bin_center = self.reg_max / 2
-        peripheral_weights = torch.abs(bin_range - bin_center) / bin_center  # [0, 1]
-        peripheral_weights = peripheral_weights.unsqueeze(0).expand_as(pred_corners)
+        μ1, Σ1 = box_to_gaussian(src_boxes)
+        μ2, Σ2 = box_to_gaussian(target_boxes)
 
-        # Distributions
-        pred_log_prob = F.log_softmax(pred_corners / T, dim=1)
-        target_prob = F.softmax(target_corners / T, dim=1)
+        # Bhattacharyya distance
+        Σ = 0.5 * (Σ1 + Σ2)
+        Σ_inv = torch.linalg.inv(Σ)
+        delta = (μ1 - μ2).unsqueeze(-1)  # [N, 2, 1]
+        term1 = 0.125 * torch.bmm(torch.bmm(delta.transpose(1, 2), Σ_inv), delta).squeeze(-1).squeeze(-1)
 
-        # Apply weighting to KL divergence
-        kl_loss = F.kl_div(pred_log_prob, target_prob, reduction='none') * peripheral_weights
-        kl_loss = kl_loss.sum(dim=1).mean()  # sum across bins, mean over samples
+        det_Σ = torch.linalg.det(Σ)
+        det_Σ1 = torch.linalg.det(Σ1)
+        det_Σ2 = torch.linalg.det(Σ2)
+        term2 = 0.5 * torch.log((det_Σ / (torch.sqrt(det_Σ1 * det_Σ2) + 1e-6)) + 1e-6)
 
-        losses["loss_peripheral"] = kl_loss * outputs["pred_boxes"].shape[1] / num_boxes
-        return losses
+        B_d = term1 + term2
+        B_c = torch.exp(-B_d)
+        H_d = torch.sqrt(1 - B_c + 1e-6)
+        prob_iou = 1 - H_d  # optional to return
 
+        # Compute focus coefficients
+        A_star = (src_boxes[:, 2] * src_boxes[:, 3]).detach()  # current size
+        D_star = torch.norm(src_boxes[:, :2] - 0.5, dim=1).detach()  # dist to image center (normalized space)
+
+        # Dynamic averages (simple EMA update)
+        if not hasattr(self, 'avg_A'):
+            self.register_buffer('avg_A', A_star.mean())
+            self.register_buffer('avg_D', D_star.mean())
+        else:
+            self.avg_A = 0.99 * self.avg_A + 0.01 * A_star.mean()
+            self.avg_D = 0.99 * self.avg_D + 0.01 * D_star.mean()
+
+        eps = 1e-6
+        L_A_star = torch.log(1 + A_star / (self.avg_A + eps))
+        L_D_star = torch.exp(D_star / (self.avg_D + eps)) - 1
+
+        alpha, beta = 0.5, 0.5
+        L_pf = (alpha * L_A_star + beta * L_D_star) * H_d
+        return {"loss_peripheral": L_pf.sum() / num_boxes}
+    
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
