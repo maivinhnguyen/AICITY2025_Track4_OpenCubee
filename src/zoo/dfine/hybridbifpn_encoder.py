@@ -91,43 +91,46 @@ class BiFPNBlock(nn.Module):
     def forward(self, features):  
         # features should be a list from lowest resolution (highest level) to highest resolution (lowest level)  
         # For example: [P5, P4, P3] where P5 is 1/32, P4 is 1/16, P3 is 1/8  
-          
+        
         # Make a copy of the original features for the bottom-up path  
         original_features = features.copy()  
-          
+        
         # Top-down pathway (from P5 to P3)  
         td_features = [features[0]]  # Start with P5  
-          
+        
         for i in range(len(features) - 1):  
-            # Upsample higher level feature  
-            upsample_feat = F.interpolate(td_features[-1], scale_factor=2.0, mode="nearest")  
-              
+            # Get target shape from the next feature level  
+            target_shape = features[i+1].shape[2:]  
+            
+            # Upsample higher level feature to match the exact spatial dimensions of the next level  
+            upsample_feat = F.interpolate(td_features[-1], size=target_shape, mode="nearest")  
+            
             # Weighted fusion of upsampled feature and original feature  
             fused = self.td_weights[i](upsample_feat, features[i+1])  
-              
+            
             # Apply convolution  
             td_feature = self.td_convs[i](fused)  
             td_features.append(td_feature)  
-          
+        
         # Bottom-up pathway (from P3 to P5)  
         bu_features = [td_features[-1]]  # Start with P3 from top-down path  
-          
+        
         for i in range(len(features) - 1):  
             # Downsample lower level feature  
             downsample_feat = self.downsample_convs[i](bu_features[-1])  
-              
+            
             # Get corresponding top-down feature and original feature  
             idx = len(features) - 2 - i  # Index for accessing the correct top-down feature  
-              
+            
             # Weighted fusion of downsampled feature, top-down feature, and original feature  
             fused = self.bu_weights[i](downsample_feat, td_features[idx], original_features[idx])  
-              
+            
             # Apply convolution  
             bu_feature = self.bu_convs[i](fused)  
             bu_features.append(bu_feature)  
-          
+        
         # Return features in the same order as input: [P5, P4, P3]  
-        return list(reversed(bu_features))  
+        return list(reversed(bu_features))
   
   
 @register()  
