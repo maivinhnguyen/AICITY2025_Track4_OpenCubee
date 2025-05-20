@@ -232,43 +232,37 @@ class HybridBiFPNEncoder(nn.Module):
     def forward(self, feats):  
         assert len(feats) == len(self.in_channels)  
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]  
-  
+    
         # Encoder  
         if self.num_encoder_layers > 0:  
             for i, enc_ind in enumerate(self.use_encoder_idx):  
                 h, w = proj_feats[enc_ind].shape[2:]  
                 # Flatten [B, C, H, W] to [B, HxW, C]  
                 src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)  
+                
+                # Fix: Ensure pos_embed is always assigned a value  
                 if self.training or self.eval_spatial_size is None:  
                     pos_embed = self.build_2d_sincos_position_embedding(  
                         w, h, self.hidden_dim, self.pe_temperature  
                     ).to(src_flatten.device)  
                 else:  
-                    def _reset_parameters(self):  
-                        if self.eval_spatial_size:  
-                            for idx in self.use_encoder_idx:  
-                                stride = self.feat_strides[idx]  
-                                pos_embed = self.build_2d_sincos_position_embedding(  
-                                    self.eval_spatial_size[1] // stride,  
-                                    self.eval_spatial_size[0] // stride,  
-                                    self.hidden_dim,  
-                                    self.pe_temperature,  
-                                )  
-                                setattr(self, f"pos_embed{idx}", pos_embed)  
-                        
-                        # Initialize other parameters  
-                        for p in self.parameters():  
-                            if p.dim() > 1:  
-                                nn.init.xavier_uniform_(p)  
-  
+                    pos_embed_attr = getattr(self, f"pos_embed{enc_ind}", None)  
+                    if pos_embed_attr is not None:  
+                        pos_embed = pos_embed_attr.to(src_flatten.device)  
+                    else:  
+                        # Fallback if attribute doesn't exist  
+                        pos_embed = self.build_2d_sincos_position_embedding(  
+                            w, h, self.hidden_dim, self.pe_temperature  
+                        ).to(src_flatten.device)  
+    
                 memory = self.encoder[i](src_flatten, pos_embed=pos_embed)  
                 proj_feats[enc_ind] = (  
                     memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()  
                 )  
-  
+    
         # Apply BiFPN blocks  
         bifpn_feats = proj_feats  
         for bifpn_block in self.bifpn_blocks:  
             bifpn_feats = bifpn_block(bifpn_feats)  
-          
+        
         return bifpn_feats
