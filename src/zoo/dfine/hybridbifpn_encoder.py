@@ -244,7 +244,22 @@ class HybridBiFPNEncoder(nn.Module):
                         w, h, self.hidden_dim, self.pe_temperature  
                     ).to(src_flatten.device)  
                 else:  
-                    pos_embed = getattr(self, f"pos_embed{enc_ind}", None).to(src_flatten.device)  
+                    def _reset_parameters(self):  
+                        if self.eval_spatial_size:  
+                            for idx in self.use_encoder_idx:  
+                                stride = self.feat_strides[idx]  
+                                pos_embed = self.build_2d_sincos_position_embedding(  
+                                    self.eval_spatial_size[1] // stride,  
+                                    self.eval_spatial_size[0] // stride,  
+                                    self.hidden_dim,  
+                                    self.pe_temperature,  
+                                )  
+                                setattr(self, f"pos_embed{idx}", pos_embed)  
+                        
+                        # Initialize other parameters  
+                        for p in self.parameters():  
+                            if p.dim() > 1:  
+                                nn.init.xavier_uniform_(p)  
   
                 memory = self.encoder[i](src_flatten, pos_embed=pos_embed)  
                 proj_feats[enc_ind] = (  
