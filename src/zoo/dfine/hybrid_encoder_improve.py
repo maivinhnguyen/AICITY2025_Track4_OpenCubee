@@ -426,7 +426,7 @@ class TransformerEncoder(nn.Module):
 
 
 @register()  
-class HybridEncoder(nn.Module):  
+class HybridEncoderImprove(nn.Module):  
     __share__ = [  
         "eval_spatial_size",  
     ]  
