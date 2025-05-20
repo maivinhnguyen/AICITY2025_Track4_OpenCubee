@@ -230,123 +230,52 @@ class DFINECriterion(nn.Module):
 
         return losses
     
-    def loss_peripheral(self, outputs, targets, indices, num_boxes):  
-        """  
-        Compute Peripheral Focus Loss to emphasize object boundaries.  
-        This loss gives more weight to the peripheral regions of objects.  
-        """  
-        losses = {}  
-        
-        if "pred_corners" in outputs:  
-            idx = self._get_src_permutation_idx(indices)  
-            target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  
-            
-            pred_corners = outputs["pred_corners"][idx].reshape(-1, (self.reg_max + 1))  
-            ref_points = outputs["ref_points"][idx].detach()  
-            
-            # Get target corners (same as in loss_local)  
-            with torch.no_grad():  
-                if self.fgl_targets_dn is None and "is_dn" in outputs:  
-                    self.fgl_targets_dn = bbox2distance(  
-                        ref_points,  
-                        box_cxcywh_to_xyxy(target_boxes),  
-                        self.reg_max,  
-                        outputs["reg_scale"],  
-                        outputs["up"],  
-                    )  
-                if self.fgl_targets is None and "is_dn" not in outputs:  
-                    self.fgl_targets = bbox2distance(  
-                        ref_points,  
-                        box_cxcywh_to_xyxy(target_boxes),  
-                        self.reg_max,  
-                        outputs["reg_scale"],  
-                        outputs["up"],  
-                    )  
-            
-            target_corners, weight_right, weight_left = (  
-                self.fgl_targets_dn if "is_dn" in outputs else self.fgl_targets  
-            )  
-            
-            # Calculate peripheral weights - ensure all tensors are properly flattened  
-            peripheral_weight = self._calculate_peripheral_weight(  
-                pred_corners,   
-                target_corners,   
-                ref_points,   
-                target_boxes  
-            )  
-            
-            # Apply peripheral focus loss  
-            losses["loss_peripheral"] = self.unimodal_distribution_focal_loss(  
-                pred_corners,  
-                target_corners,  
-                weight_right,  
-                weight_left,  
-                peripheral_weight,  # Use peripheral weights instead of IoU-based weights  
-                avg_factor=num_boxes,  
-            )  
-        
-        return losses
-    
-    def _calculate_peripheral_weight(self, pred_corners, target_corners, ref_points, target_boxes):  
-        """  
-        Calculate weights that emphasize peripheral regions of objects.  
-        
-        Args:  
-            pred_corners: Predicted distribution for box corners  
-            target_corners: Target distribution for box corners  
-            ref_points: Reference points (initial box predictions)  
-            target_boxes: Ground truth bounding boxes  
-            
-        Returns:  
-            peripheral_weight: Weights emphasizing peripheral regions  
-        """  
-        # Convert boxes to xyxy format for easier edge calculations  
-        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)  
-        
-        # Initialize distance tensor - match the shape of pred_corners first dimension  
-        edge_distances = torch.zeros_like(pred_corners[:, 0])  
-        
-        # Calculate distance from each point to the nearest edge of the ground truth box  
-        # This creates a distance field where points closer to edges have smaller values  
-        
-        # Instead of iterating through each box, use vectorized operations  
-        # Extract box coordinates - target_boxes_xyxy should be shape [N, 4]  
-        x1 = target_boxes_xyxy[:, 0]  
-        y1 = target_boxes_xyxy[:, 1]  
-        x2 = target_boxes_xyxy[:, 2]  
-        y2 = target_boxes_xyxy[:, 3]  
-        
-        # Calculate distance to each edge - ref_points should be shape [N, 2]  
-        dist_left = torch.abs(ref_points[:, 0] - x1)  
-        dist_right = torch.abs(ref_points[:, 0] - x2)  
-        dist_top = torch.abs(ref_points[:, 1] - y1)  
-        dist_bottom = torch.abs(ref_points[:, 1] - y2)  
-        
-        # Stack distances and find minimum for each point  
-        all_dists = torch.stack([dist_left, dist_right, dist_top, dist_bottom], dim=1)  
-        min_dists, _ = torch.min(all_dists, dim=1)  
-        edge_distances = min_dists  
-        
-        # Normalize distances to [0, 1] range  
-        max_dist = torch.max(edge_distances)  
-        if max_dist > 0:  
-            normalized_distances = edge_distances / max_dist  
-        else:  
-            normalized_distances = edge_distances  
-        
-        # Convert distances to weights - points closer to edges get higher weights  
-        # Using exponential decay function: weight = exp(-α * normalized_distance)  
-        alpha = 5.0  # Controls how quickly weight decreases with distance  
-        peripheral_weight = torch.exp(-alpha * normalized_distances)  
-        
-        # Apply additional weighting based on prediction confidence  
-        # Points with higher prediction confidence get higher weights  
-        pred_confidence = F.softmax(pred_corners, dim=1).max(dim=1)[0]  
-        
-        # Combine peripheral weight with confidence  
-        combined_weight = peripheral_weight * pred_confidence  
-        
-        return combined_weight
+    def loss_peripheral(self, outputs, targets, indices, num_boxes):
+        """
+        Peripheral Focus Loss (PFL) encourages accurate predictions at the peripheral (outer edge)
+        regions of the object bounding boxes.
+        """
+        assert "pred_boxes" in outputs
+
+        idx = self._get_src_permutation_idx(indices)
+        pred_boxes = outputs["pred_boxes"][idx]  # [N, 4] in cxcywh format
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  # [N, 4]
+
+        # Convert from cxcywh to xyxy
+        pred_boxes_xyxy = box_cxcywh_to_xyxy(pred_boxes)
+        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)
+
+        # Compute peripheral boxes (10% shrink from all sides)
+        shrink_ratio = 0.1
+        x1, y1, x2, y2 = target_boxes_xyxy.unbind(-1)
+        width = (x2 - x1)
+        height = (y2 - y1)
+
+        # Shrink inward to define center zone (peripheral = outside this)
+        inner_x1 = x1 + width * shrink_ratio
+        inner_y1 = y1 + height * shrink_ratio
+        inner_x2 = x2 - width * shrink_ratio
+        inner_y2 = y2 - height * shrink_ratio
+
+        # Define masks: peripheral areas are outside the inner box but inside the target box
+        peripheral_mask = (
+            (pred_boxes_xyxy[:, 0] < inner_x1) | (pred_boxes_xyxy[:, 1] < inner_y1) |
+            (pred_boxes_xyxy[:, 2] > inner_x2) | (pred_boxes_xyxy[:, 3] > inner_y2)
+        ).float()
+
+        # Compute IoU between pred and target boxes
+        ious, _ = box_iou(pred_boxes_xyxy, target_boxes_xyxy)
+        ious_diag = torch.diag(ious).detach()
+
+        # Apply higher weight to peripheral box misalignment
+        weight = 1.0 + 2.0 * peripheral_mask  # 3x weight on peripheral prediction error
+
+        # Use GIoU loss as base
+        giou_loss = 1 - torch.diag(generalized_box_iou(pred_boxes_xyxy, target_boxes_xyxy))
+
+        loss_periph = (giou_loss * weight).sum() / num_boxes
+
+        return {"loss_peripheral": loss_periph}
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
