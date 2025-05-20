@@ -35,9 +35,9 @@ class WeightedFeatureFusion(nn.Module):
         super().__init__()  
         self.weights = nn.Parameter(torch.ones(num_inputs, dtype=torch.float32), requires_grad=True)  
           
-    def forward(self, inputs):  
+    def forward(self, *inputs):  # Change to accept variable arguments instead of a list  
         weights = F.softmax(self.weights, dim=0)  
-        return sum(w * x for w, x in zip(weights, inputs))  
+        return sum(w * x for w, x in zip(weights, inputs)) 
   
   
 class BiFPNBlock(nn.Module):  
@@ -103,7 +103,7 @@ class BiFPNBlock(nn.Module):
             upsample_feat = F.interpolate(td_features[-1], scale_factor=2.0, mode="nearest")  
               
             # Weighted fusion of upsampled feature and original feature  
-            fused = self.td_weights[i]([upsample_feat, features[i+1]])  
+            fused = self.td_weights[i](upsample_feat, features[i+1])  
               
             # Apply convolution  
             td_feature = self.td_convs[i](fused)  
@@ -120,7 +120,7 @@ class BiFPNBlock(nn.Module):
             idx = len(features) - 2 - i  # Index for accessing the correct top-down feature  
               
             # Weighted fusion of downsampled feature, top-down feature, and original feature  
-            fused = self.bu_weights[i]([downsample_feat, td_features[idx], original_features[idx]])  
+            fused = self.bu_weights[i](downsample_feat, td_features[idx], original_features[idx])  
               
             # Apply convolution  
             bu_feature = self.bu_convs[i](fused)  
