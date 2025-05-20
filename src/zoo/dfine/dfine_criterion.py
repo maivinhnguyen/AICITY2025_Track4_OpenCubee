@@ -259,7 +259,7 @@ class DFINECriterion(nn.Module):
 
         # Step 2: Compute softmax temperature for predicted and target corners
         pred_prob = F.log_softmax(pred_corners / T, dim=1)
-        target_prob = F.softmax(target_corners / T, dim=1)
+        target_prob = F.softmax((target_corners / T).unsqueeze(0), dim=1)
 
         # Step 3: Compute KL divergence per sample
         loss_kl = F.kl_div(pred_prob, target_prob, reduction="none").sum(dim=1)
