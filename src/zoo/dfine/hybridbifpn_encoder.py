@@ -14,12 +14,12 @@ import torch.nn as nn
 import torch.nn.functional as F  
   
 from ...core import register  
-from .utils import get_activation
+from .utils import get_activation  
 from .hybrid_encoder import (  
-    TransformerEncoder,   
-    TransformerEncoderLayer,   
-    ConvNormLayer_fuse,   
-    SCDown,   
+    TransformerEncoder,  
+    TransformerEncoderLayer,  
+    ConvNormLayer_fuse,  
+    SCDown,  
     RepNCSPELAN4  
 )  
   
@@ -35,9 +35,9 @@ class WeightedFeatureFusion(nn.Module):
         super().__init__()  
         self.weights = nn.Parameter(torch.ones(num_inputs, dtype=torch.float32), requires_grad=True)  
           
-    def forward(self, *inputs):  # Change to accept variable arguments instead of a list  
+    def forward(self, *inputs):  # Accept variable arguments instead of a list  
         weights = F.softmax(self.weights, dim=0)  
-        return sum(w * x for w, x in zip(weights, inputs)) 
+        return sum(w * x for w, x in zip(weights, inputs))  
   
   
 class BiFPNBlock(nn.Module):  
@@ -209,6 +209,19 @@ class HybridBiFPNEncoder(nn.Module):
         self._reset_parameters()  
       
     def _reset_parameters(self):  
+        # Initialize positional embeddings for evaluation  
+        if self.eval_spatial_size:  
+            for idx in self.use_encoder_idx:  
+                stride = self.feat_strides[idx]  
+                pos_embed = self.build_2d_sincos_position_embedding(  
+                    self.eval_spatial_size[1] // stride,  
+                    self.eval_spatial_size[0] // stride,  
+                    self.hidden_dim,  
+                    self.pe_temperature,  
+                )  
+                setattr(self, f"pos_embed{idx}", pos_embed)  
+          
+        # Initialize other parameters  
         for p in self.parameters():  
             if p.dim() > 1:  
                 nn.init.xavier_uniform_(p)  
@@ -221,8 +234,11 @@ class HybridBiFPNEncoder(nn.Module):
         pos_dim = embed_dim // 4  
         omega = torch.arange(pos_dim, dtype=torch.float32) / pos_dim  
         omega = 1.0 / (temperature**omega)  
-        out_w = torch.einsum("m,d->md", [grid_w.flatten(), omega])  
-        out_h = torch.einsum("m,d->md", [grid_h.flatten(), omega])  
+          
+        # Fix: Use direct tensor arguments instead of a list  
+        out_w = torch.einsum("m,d->md", grid_w.flatten(), omega)  
+        out_h = torch.einsum("m,d->md", grid_h.flatten(), omega)  
+          
         pos_emb = torch.cat(  
             [torch.sin(out_w), torch.cos(out_w), torch.sin(out_h), torch.cos(out_h)], dim=1  
         )[None, :, :]  
@@ -232,14 +248,14 @@ class HybridBiFPNEncoder(nn.Module):
     def forward(self, feats):  
         assert len(feats) == len(self.in_channels)  
         proj_feats = [self.input_proj[i](feat) for i, feat in enumerate(feats)]  
-    
+      
         # Encoder  
         if self.num_encoder_layers > 0:  
             for i, enc_ind in enumerate(self.use_encoder_idx):  
                 h, w = proj_feats[enc_ind].shape[2:]  
                 # Flatten [B, C, H, W] to [B, HxW, C]  
                 src_flatten = proj_feats[enc_ind].flatten(2).permute(0, 2, 1)  
-                
+                  
                 # Fix: Ensure pos_embed is always assigned a value  
                 if self.training or self.eval_spatial_size is None:  
                     pos_embed = self.build_2d_sincos_position_embedding(  
@@ -254,15 +270,15 @@ class HybridBiFPNEncoder(nn.Module):
                         pos_embed = self.build_2d_sincos_position_embedding(  
                             w, h, self.hidden_dim, self.pe_temperature  
                         ).to(src_flatten.device)  
-    
+      
                 memory = self.encoder[i](src_flatten, pos_embed=pos_embed)  
                 proj_feats[enc_ind] = (  
                     memory.permute(0, 2, 1).reshape(-1, self.hidden_dim, h, w).contiguous()  
                 )  
-    
+      
         # Apply BiFPN blocks  
         bifpn_feats = proj_feats  
         for bifpn_block in self.bifpn_blocks:  
             bifpn_feats = bifpn_block(bifpn_feats)  
-        
+          
         return bifpn_feats
