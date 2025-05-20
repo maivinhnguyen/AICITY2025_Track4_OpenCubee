@@ -84,9 +84,9 @@ class HybridBiFPNEncoder(nn.Module):
           
     def forward(self, feats):  
         # Process features through BiFPN first  
-        bifpn_feats = self.bifpn(feats)  
+        bifpn_feats = self.bifpn.forward(feats)  
           
         # Then process through HybridEncoder  
-        hybrid_feats = self.hybrid(bifpn_feats)  
+        hybrid_feats = self.hybrid.forward(bifpn_feats)  
           
         return hybrid_feats
