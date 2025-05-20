@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from ...core import register
 from .utils import get_activation
 
-__all__ = ["HybridEncoder"]
+__all__ = ["HybridEncoderImprove"]
 
 
 class ConvNormLayer_fuse(nn.Module):

@@ -9,14 +9,14 @@ eval_spatial_size: [960, 960] # h w
 
 DFINE:
   backbone: HGNetv2
-  encoder: HybridEncoder
+  encoder: HybridEncoderImprove
   decoder: DFINETransformer
 
 HGNetv2:
   pretrained: True
   local_model_dir: weight/hgnetv2/
 
-HybridEncoder:
+HybridEncoderImprove:
   in_channels: [512, 1024, 2048]
   feat_strides: [8, 16, 32]
   
@@ -33,7 +33,7 @@ HybridEncoder:
   expansion: 1.0
   depth_mult: 1
   act: 'silu'
-  
+
   # BiFPN specific  
   num_bifpn_blocks: 3  # Add this parameter
 
