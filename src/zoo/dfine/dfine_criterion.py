@@ -231,15 +231,15 @@ class DFINECriterion(nn.Module):
         return losses
     
     def loss_peripheral(self, outputs, targets, indices, num_boxes, T=5):
-        """Peripheral Focus Loss (PFL): Encourages more attention to peripheral bins of the distribution."""
+        """Peripheral Focus Loss: encourages attention to peripheral bins of the predicted distribution"""
         losses = {}
         if "pred_corners" not in outputs:
-            return losses  # no corner distribution predictions
+            return losses
 
         idx = self._get_src_permutation_idx(indices)
-        pred_corners = outputs["pred_corners"][idx].reshape(-1, (self.reg_max + 1))
+        pred_corners = outputs["pred_corners"][idx].reshape(-1, self.reg_max + 1)
 
-        # Calculate soft target distributions
+        # Prepare target corner distributions
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
         ref_points = outputs["ref_points"][idx].detach()
 
@@ -252,27 +252,22 @@ class DFINECriterion(nn.Module):
                 outputs["up"],
             )
 
-        # Step 1: Peripheral weight vector (based on bin distance from center)
-        bin_range = torch.arange(self.reg_max + 1, device=pred_corners.device)
-        bin_center = (self.reg_max / 2)
-        peripheral_weight = torch.abs(bin_range - bin_center) / bin_center  # [0, 1]
+        # Peripheral weights (center bin has low weight, peripheral bins have high weight)
+        device = pred_corners.device
+        bin_range = torch.arange(self.reg_max + 1, device=device).float()
+        bin_center = self.reg_max / 2
+        peripheral_weights = torch.abs(bin_range - bin_center) / bin_center  # [0, 1]
+        peripheral_weights = peripheral_weights.unsqueeze(0).expand_as(pred_corners)
 
-        # Step 2: Compute softmax temperature for predicted and target corners
-        pred_prob = F.log_softmax(pred_corners / T, dim=1)
-        target_prob = F.softmax((target_corners / T).unsqueeze(0), dim=1)
+        # Distributions
+        pred_log_prob = F.log_softmax(pred_corners / T, dim=1)
+        target_prob = F.softmax(target_corners / T, dim=1)
 
-        # Step 3: Compute KL divergence per sample
-        loss_kl = F.kl_div(pred_prob, target_prob, reduction="none").sum(dim=1)
+        # Apply weighting to KL divergence
+        kl_loss = F.kl_div(pred_log_prob, target_prob, reduction='none') * peripheral_weights
+        kl_loss = kl_loss.sum(dim=1).mean()  # sum across bins, mean over samples
 
-        # Step 4: Apply peripheral weighting
-        peripheral_scaling = peripheral_weight.unsqueeze(0).expand_as(target_prob)
-        weighted_target_prob = target_prob * peripheral_scaling
-        weighted_target_prob = weighted_target_prob / (weighted_target_prob.sum(dim=1, keepdim=True) + 1e-6)
-
-        weighted_kl = F.kl_div(pred_prob, weighted_target_prob, reduction="none").sum(dim=1)
-        final_loss = (loss_kl + weighted_kl).mean()
-
-        losses["loss_peripheral"] = final_loss * outputs["pred_boxes"].shape[1] / num_boxes
+        losses["loss_peripheral"] = kl_loss * outputs["pred_boxes"].shape[1] / num_boxes
         return losses
 
     def _get_src_permutation_idx(self, indices):
