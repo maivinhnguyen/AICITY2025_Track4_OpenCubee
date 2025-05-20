@@ -17,7 +17,7 @@ HGNetv2:
   local_model_dir: weight/hgnetv2/  
   
 HybridBiFPNEncoder:  # Changed from HybridEncoder or BiFPNEncoder  
-  in_channels: [512, 1024, 2048]  # Adjust based on your backbone  
+  in_channels: [384, 768, 1536]   # Adjust based on your backbone  
   feat_strides: [8, 16, 32]  
   hidden_dim: 256  
     
