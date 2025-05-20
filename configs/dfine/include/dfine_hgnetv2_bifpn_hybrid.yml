@@ -17,20 +17,25 @@ HGNetv2:
   local_model_dir: weight/hgnetv2/  
   
 HybridBiFPNEncoder:  # Changed from HybridEncoder or BiFPNEncoder  
-  in_channels: [384, 768, 1536]   # Adjust based on your backbone  
+  in_channels: [512, 1024, 2048]  # Adjust based on your backbone  
   feat_strides: [8, 16, 32]  
   hidden_dim: 256  
     
   # HybridEncoder parameters  
-  use_encoder_idx: [1]  
-  dim_feedforward: 512  
-  expansion: 0.34  
-  depth_mult: 0.5  
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.
+  enc_act: 'gelu'
+  expansion: 1.0
+  depth_mult: 1
+  act: 'silu'  
     
   # BiFPN parameters  
   num_bifpn_layers: 3  
-  weighted_fusion: true  
-  use_attention: true  
+  weighted_fusion: True  
+  use_attention: True  
   attention_type: "spatial"
   
 DFINETransformer:  

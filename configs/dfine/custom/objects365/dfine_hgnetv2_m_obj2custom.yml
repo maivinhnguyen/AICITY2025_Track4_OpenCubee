@@ -30,14 +30,19 @@ BHybridBiFPNEncoder:
   depth_mult: 0.67  
     
   # HybridEncoder parameters  
-  use_encoder_idx: [1]  
-  dim_feedforward: 512  
-  expansion: 0.34  
+  use_encoder_idx: [2]
+  num_encoder_layers: 1
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.
+  enc_act: 'gelu'
+  expansion: 0.34
+  depth_mult: 1   
     
   # BiFPN parameters  
   num_bifpn_layers: 3  
-  weighted_fusion: true  
-  use_attention: true  
+  weighted_fusion: True  
+  use_attention: True  
   attention_type: "spatial"  
   act: "silu"  
   dropout: 0.0
