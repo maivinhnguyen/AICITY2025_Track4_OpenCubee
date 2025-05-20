@@ -24,10 +24,11 @@ DFINETransformer:
   eval_idx: -1  # -2 -3
 
 HybridBiFPNEncoder:  
-  in_channels: [384, 768, 1536]  # Keep the same in_channels as the original HybridEncoder  
+  in_channels: [384, 768, 1536]  # Keep the same in_channels as the original  
   hidden_dim: 256  
-  depth_mult: 0.67  
-  num_bifpn_blocks: 3  # Add this new parameter
+  depth_mult: 1.0  # Increase from 0.67  
+  expansion: 1.5   # Increase from 1.0  
+  num_bifpn_blocks: 5  # Increase from 3
 
 optimizer:
   type: AdamW
