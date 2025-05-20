@@ -3,7 +3,7 @@ __include__: [
   '../../../runtime.yml',
   '../../include/dataloader.yml',
   '../../include/optimizer.yml',
-  '../../include/dfine_hgnetv2_bifpn_hybrid.yml',
+  '../../include/dfine_hgnetv2_improve.yml',
 ]
 
 output_dir: ./output/dfine_hgnetv2_m_obj2custom
@@ -23,12 +23,11 @@ DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
-HybridBiFPNEncoder:  
-  in_channels: [384, 768, 1536]  # Keep the same in_channels as the original  
+HybridEncoder:  
+  in_channels: [384, 768, 1536]  
   hidden_dim: 256  
-  depth_mult: 1.0  # Increase from 0.67  
-  expansion: 1.0   # Increase from 1.0  
-  num_bifpn_blocks: 4  # Increase from 3
+  depth_mult: 0.67  
+  num_bifpn_blocks: 3  # Add this parameter
 
 optimizer:
   type: AdamW
