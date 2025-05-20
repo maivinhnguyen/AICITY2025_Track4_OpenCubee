@@ -232,20 +232,22 @@ class DFINECriterion(nn.Module):
     
     def loss_peripheral(self, outputs, targets, indices, num_boxes):
         """
-        Peripheral Focus Loss (based on ProbIoU + focus on small/far objects).
+        Peripheral Focus Loss (ProbIoU + size & distance focusing).
         """
-        assert "pred_boxes" in outputs
+        if len(indices) == 0 or sum(len(i[0]) for i in indices) == 0:
+            return {"loss_peripheral": torch.tensor(0.0, device=next(iter(outputs.values())).device)}
+
         idx = self._get_src_permutation_idx(indices)
+        src_boxes = outputs["pred_boxes"][idx]  # [N, 4] (cxcywh)
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
-        src_boxes = outputs["pred_boxes"][idx]  # [N, 4] in cxcywh
-        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  # [N, 4]
+        eps = 1e-6
 
-        # Convert to mean and covariance of 2D Gaussian (assume no rotation)
         def box_to_gaussian(boxes):
-            # center = μ, covariance = diag([w², h²]/12)
+            # Clamp width and height to avoid near-zero covariance
+            wh = boxes[:, 2:].clamp(min=1e-3)
             mean = boxes[:, :2]
-            wh = boxes[:, 2:]
-            cov = torch.zeros((boxes.shape[0], 2, 2), device=boxes.device)
+            cov = torch.zeros((boxes.size(0), 2, 2), device=boxes.device)
             cov[:, 0, 0] = (wh[:, 0] ** 2) / 12.0
             cov[:, 1, 1] = (wh[:, 1] ** 2) / 12.0
             return mean, cov
@@ -253,40 +255,44 @@ class DFINECriterion(nn.Module):
         μ1, Σ1 = box_to_gaussian(src_boxes)
         μ2, Σ2 = box_to_gaussian(target_boxes)
 
-        # Bhattacharyya distance
         Σ = 0.5 * (Σ1 + Σ2)
         Σ_inv = torch.linalg.inv(Σ)
+
         delta = (μ1 - μ2).unsqueeze(-1)  # [N, 2, 1]
         term1 = 0.125 * torch.bmm(torch.bmm(delta.transpose(1, 2), Σ_inv), delta).squeeze(-1).squeeze(-1)
 
-        det_Σ = torch.linalg.det(Σ)
-        det_Σ1 = torch.linalg.det(Σ1)
-        det_Σ2 = torch.linalg.det(Σ2)
-        term2 = 0.5 * torch.log((det_Σ / (torch.sqrt(det_Σ1 * det_Σ2) + 1e-6)) + 1e-6)
+        det_Σ = torch.linalg.det(Σ).clamp(min=eps)
+        det_Σ1 = torch.linalg.det(Σ1).clamp(min=eps)
+        det_Σ2 = torch.linalg.det(Σ2).clamp(min=eps)
 
+        term2 = 0.5 * torch.log((det_Σ / torch.sqrt(det_Σ1 * det_Σ2)).clamp(min=eps))
         B_d = term1 + term2
         B_c = torch.exp(-B_d)
-        H_d = torch.sqrt(1 - B_c + 1e-6)
-        prob_iou = 1 - H_d  # optional to return
+        H_d = torch.sqrt((1.0 - B_c).clamp(min=0.0, max=1.0))
 
-        # Compute focus coefficients
-        A_star = (src_boxes[:, 2] * src_boxes[:, 3]).detach()  # current size
-        D_star = torch.norm(src_boxes[:, :2] - 0.5, dim=1).detach()  # dist to image center (normalized space)
+        # Optional debug
+        # print(f"Peripheral loss – H_d: min={H_d.min().item():.4f}, max={H_d.max().item():.4f}")
 
-        # Dynamic averages (simple EMA update)
-        if not hasattr(self, 'avg_A'):
-            self.register_buffer('avg_A', A_star.mean())
-            self.register_buffer('avg_D', D_star.mean())
+        # Distance and size focus coefficients
+        A_star = (src_boxes[:, 2] * src_boxes[:, 3]).detach()  # object size
+        D_star = torch.norm(src_boxes[:, :2] - 0.5, dim=1).detach()  # distance from center (normalized)
+
+        # Dynamic average update
+        if not hasattr(self, "avg_A"):
+            self.register_buffer("avg_A", A_star.mean())
+            self.register_buffer("avg_D", D_star.mean())
         else:
             self.avg_A = 0.99 * self.avg_A + 0.01 * A_star.mean()
             self.avg_D = 0.99 * self.avg_D + 0.01 * D_star.mean()
 
-        eps = 1e-6
         L_A_star = torch.log(1 + A_star / (self.avg_A + eps))
         L_D_star = torch.exp(D_star / (self.avg_D + eps)) - 1
 
-        alpha, beta = 0.5, 0.5
-        L_pf = (alpha * L_A_star + beta * L_D_star) * H_d
+        # Final peripheral focus loss
+        alpha, beta = 0.5, 0.5  # You can expose these as class params
+        focus_weight = alpha * L_A_star + beta * L_D_star
+        L_pf = focus_weight * H_d
+
         return {"loss_peripheral": L_pf.sum() / num_boxes}
     
     def _get_src_permutation_idx(self, indices):
