@@ -230,52 +230,57 @@ class DFINECriterion(nn.Module):
 
         return losses
     
-    def loss_peripheral(self, outputs, targets, indices, num_boxes):
+    def loss_peripheral(pred_dist, gt_boxes, ref_points, bin_count=14, radius=1.0, max_dis=64):
         """
-        Peripheral Focus Loss (PFL) encourages accurate predictions at the peripheral (outer edge)
-        regions of the object bounding boxes.
+        Peripheral Focus Loss as described in the provided algorithm.
+
+        pred_dist: (B, 4, bin_count) – predicted distributions for l, t, r, b
+        gt_boxes: (B, 4) – ground truth boxes in (x1, y1, x2, y2)
+        ref_points: (B, 2) – reference points (anchor centers)
         """
-        assert "pred_boxes" in outputs
 
-        idx = self._get_src_permutation_idx(indices)
-        pred_boxes = outputs["pred_boxes"][idx]  # [N, 4] in cxcywh format
-        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  # [N, 4]
+        def bbox2distance(points, boxes, max_dis):
+            left = (points[:, 0] - boxes[:, 0]).clamp(min=0, max=max_dis)
+            top = (points[:, 1] - boxes[:, 1]).clamp(min=0, max=max_dis)
+            right = (boxes[:, 2] - points[:, 0]).clamp(min=0, max=max_dis)
+            bottom = (boxes[:, 3] - points[:, 1]).clamp(min=0, max=max_dis)
+            return torch.stack([left, top, right, bottom], dim=1)  # (B, 4)
 
-        # Convert from cxcywh to xyxy
-        pred_boxes_xyxy = box_cxcywh_to_xyxy(pred_boxes)
-        target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)
+        def distance2weight(distances, radius):
+            B = distances.size(0)
+            soft_targets = torch.zeros(B, bin_count, device=distances.device)
+            for i in range(B):
+                d = distances[i].item()
+                lower = int(torch.floor(torch.tensor(d)))
+                upper = lower + 1
+                if 0 <= lower < bin_count:
+                    soft_targets[i, lower] += upper - d
+                if 0 <= upper < bin_count:
+                    soft_targets[i, upper] += d - lower
+            return soft_targets
 
-        # Compute peripheral boxes (10% shrink from all sides)
-        shrink_ratio = 0.1
-        x1, y1, x2, y2 = target_boxes_xyxy.unbind(-1)
-        width = (x2 - x1)
-        height = (y2 - y1)
+        B = pred_dist.size(0)
+        total_loss = 0.0
 
-        # Shrink inward to define center zone (peripheral = outside this)
-        inner_x1 = x1 + width * shrink_ratio
-        inner_y1 = y1 + height * shrink_ratio
-        inner_x2 = x2 - width * shrink_ratio
-        inner_y2 = y2 - height * shrink_ratio
+        corner_distances = bbox2distance(ref_points, gt_boxes, max_dis=max_dis)  # (B, 4)
 
-        # Define masks: peripheral areas are outside the inner box but inside the target box
-        peripheral_mask = (
-            (pred_boxes_xyxy[:, 0] < inner_x1) | (pred_boxes_xyxy[:, 1] < inner_y1) |
-            (pred_boxes_xyxy[:, 2] > inner_x2) | (pred_boxes_xyxy[:, 3] > inner_y2)
-        ).float()
+        for corner_idx in range(4):  # l, t, r, b
+            dists = corner_distances[:, corner_idx]  # (B,)
+            soft_targets = distance2weight(dists, radius=radius)  # (B, bin_count)
 
-        # Compute IoU between pred and target boxes
-        ious, _ = box_iou(pred_boxes_xyxy, target_boxes_xyxy)
-        ious_diag = torch.diag(ious).detach()
+            max_bin_indices = torch.argmax(soft_targets, dim=1)  # (B,)
+            bin_range = torch.arange(bin_count, device=pred_dist.device).unsqueeze(0)  # (1, bin_count)
+            peripheral_weights = torch.abs(bin_range - max_bin_indices.unsqueeze(1))  # (B, bin_count)
 
-        # Apply higher weight to peripheral box misalignment
-        weight = 0.5 + 0.5 * peripheral_mask  # 3x weight on peripheral prediction error
+            weighted_target = soft_targets * peripheral_weights  # (B, bin_count)
+            weighted_target = F.normalize(weighted_target, p=1, dim=1)
 
-        # Use GIoU loss as base
-        giou_loss = 1 - torch.diag(generalized_box_iou(pred_boxes_xyxy, target_boxes_xyxy))
+            pred_probs = F.softmax(pred_dist[:, corner_idx, :], dim=-1)  # (B, bin_count)
 
-        loss_periph = (giou_loss * weight).sum() / weight.sum().clamp(min=1.0)
+            kl_loss = F.kl_div(pred_probs.log(), weighted_target, reduction='batchmean')
+            total_loss += kl_loss
 
-        return {"loss_peripheral": loss_periph}
+        return total_loss / 4
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
