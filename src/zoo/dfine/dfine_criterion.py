@@ -232,8 +232,11 @@ class DFINECriterion(nn.Module):
     
     def loss_peripheral(self, outputs, targets, indices, num_boxes):
         """
-        Peripheral Focus Loss (PFL) encourages accurate predictions at the peripheral (outer edge)
-        regions of the object bounding boxes.
+        Peripheral Focus Loss (PFL) prioritizes accurate boundary predictions by giving
+        higher weight to the peripheral regions of bounding boxes.
+        
+        This loss enhances detection precision at object boundaries, which is critical
+        for accurate object localization, especially for overlapping or adjacent objects.
         """
         assert "pred_boxes" in outputs
 
@@ -241,41 +244,62 @@ class DFINECriterion(nn.Module):
         pred_boxes = outputs["pred_boxes"][idx]  # [N, 4] in cxcywh format
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)  # [N, 4]
 
-        # Convert from cxcywh to xyxy
+        # Convert from cxcywh to xyxy format for easier peripheral region calculation
         pred_boxes_xyxy = box_cxcywh_to_xyxy(pred_boxes)
         target_boxes_xyxy = box_cxcywh_to_xyxy(target_boxes)
 
-        # Compute peripheral boxes (10% shrink from all sides)
-        shrink_ratio = 0.1
-        x1, y1, x2, y2 = target_boxes_xyxy.unbind(-1)
-        width = (x2 - x1)
-        height = (y2 - y1)
-
-        # Shrink inward to define center zone (peripheral = outside this)
-        inner_x1 = x1 + width * shrink_ratio
-        inner_y1 = y1 + height * shrink_ratio
-        inner_x2 = x2 - width * shrink_ratio
-        inner_y2 = y2 - height * shrink_ratio
-
-        # Define masks: peripheral areas are outside the inner box but inside the target box
-        peripheral_mask = (
-            (pred_boxes_xyxy[:, 0] < inner_x1) | (pred_boxes_xyxy[:, 1] < inner_y1) |
-            (pred_boxes_xyxy[:, 2] > inner_x2) | (pred_boxes_xyxy[:, 3] > inner_y2)
-        ).float()
-
-        # Compute IoU between pred and target boxes
+        # Calculate box dimensions
+        target_width = target_boxes_xyxy[:, 2] - target_boxes_xyxy[:, 0]
+        target_height = target_boxes_xyxy[:, 3] - target_boxes_xyxy[:, 1]
+        
+        # Define peripheral region (outer 20% of the box)
+        shrink_ratio = 0.2
+        
+        # Inner box coordinates (the non-peripheral region)
+        inner_x1 = target_boxes_xyxy[:, 0] + target_width * shrink_ratio
+        inner_y1 = target_boxes_xyxy[:, 1] + target_height * shrink_ratio
+        inner_x2 = target_boxes_xyxy[:, 2] - target_width * shrink_ratio
+        inner_y2 = target_boxes_xyxy[:, 3] - target_height * shrink_ratio
+        
+        # Compute distance from predicted corners to inner box borders
+        # Positive values mean the corner is in the peripheral region
+        dx1 = torch.max(inner_x1 - pred_boxes_xyxy[:, 0], torch.zeros_like(inner_x1))
+        dy1 = torch.max(inner_y1 - pred_boxes_xyxy[:, 1], torch.zeros_like(inner_y1))
+        dx2 = torch.max(pred_boxes_xyxy[:, 2] - inner_x2, torch.zeros_like(inner_x2))
+        dy2 = torch.max(pred_boxes_xyxy[:, 3] - inner_y2, torch.zeros_like(inner_y2))
+        
+        # Calculate peripheral weight based on how much the prediction overlaps with peripheral region
+        peripheral_weight = (dx1 + dy1 + dx2 + dy2) / (target_width + target_height)
+        
+        # Apply Bhattacharyya distance-inspired weighting
+        # Get standard IoU as a baseline metric
         ious, _ = box_iou(pred_boxes_xyxy, target_boxes_xyxy)
         ious_diag = torch.diag(ious).detach()
-
-        # Apply higher weight to peripheral box misalignment
-        weight = 0.5 + 0.5 * peripheral_mask  # 3x weight on peripheral prediction error
-
-        # Use GIoU loss as base
+        
+        # Hellinger distance-like term (similar to equation 4 in the images)
+        hellinger_term = torch.sqrt(1 - ious_diag)
+        
+        # Size and distance adaptive weighting similar to equations in images 3-4
+        box_size = target_width * target_height
+        avg_size = box_size.mean()
+        
+        # Size focusing coefficient (similar to equation 6)
+        size_weight = torch.log(1 + avg_size / (box_size + 1e-6))
+        
+        # Combine all factors for the final peripheral focus loss
+        # Similar approach to equation 8 in image 4
+        alpha, beta = 0.6, 0.4  # Hyperparameters prioritizing peripheral regions
+        
+        # Final loss combines GIoU loss with peripheral weighting
         giou_loss = 1 - torch.diag(generalized_box_iou(pred_boxes_xyxy, target_boxes_xyxy))
-
-        loss_periph = (giou_loss * weight).sum() / weight.sum().clamp(min=1.0)
-
-        return {"loss_peripheral": loss_periph}
+        
+        # Apply adaptive weighting
+        weighted_loss = (alpha * peripheral_weight + beta * size_weight) * hellinger_term * giou_loss
+        
+        # Normalize and return loss
+        loss_pfl = weighted_loss.sum() / num_boxes
+        
+        return {"loss_peripheral": loss_pfl}
     
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
