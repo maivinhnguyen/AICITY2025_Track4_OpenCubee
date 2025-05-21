@@ -118,9 +118,21 @@ class HybridHSFPNEncoder(nn.Module):
         for idx, enc in zip(self.use_encoder_idx, self.encoder):
             B, C, H, W = proj_feats[idx].shape
             x = proj_feats[idx].flatten(2).permute(0, 2, 1)
+
+            # Try to use precomputed pos_embed
             pos = getattr(self, f'pos_embed{idx}', None)
+
             if pos is not None:
-                pos = pos.to(x.device)
+                # Check if pos_embed size matches current flattened spatial size
+                if pos.shape[1] != H * W:
+                    # Fallback to dynamic position embedding
+                    pos = self.build_2d_sincos_position_embedding(W, H, self.hidden_dim, self.pe_temperature).to(x.device)
+                else:
+                    pos = pos.to(x.device)
+            else:
+                # No precomputed pos_embed found
+                pos = self.build_2d_sincos_position_embedding(W, H, self.hidden_dim, self.pe_temperature).to(x.device)
+
             x = enc(x, pos_embed=pos)
             proj_feats[idx] = x.permute(0, 2, 1).reshape(B, C, H, W)
 
