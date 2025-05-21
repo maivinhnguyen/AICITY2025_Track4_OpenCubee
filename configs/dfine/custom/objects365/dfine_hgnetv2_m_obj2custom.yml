@@ -33,7 +33,6 @@ HybridHSFPNEncoder:
   enc_act: 'gelu'                # Add this  
   num_encoder_layers: 1          # Add this  
   pe_temperature: 10000          # Add this  
-  depth_mult: 0.67               # Already correct  
   eval_spatial_size: [320, 320]  # Add this to match your input size  
   use_hsfpn: True                # Add this
 
