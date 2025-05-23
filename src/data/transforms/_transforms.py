@@ -165,35 +165,25 @@ class ConvertPILImage(T.Transform):
 
         return inpt
 
-@register()    
-class CopyPaste(T.Transform):    
-    _transformed_types = (PIL.Image.Image, BoundingBoxes, Image)    
-        
-    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0,   
-                 rare_class_ids=None, small_object_threshold=0.05) -> None:    
-        """    
-        CopyPaste transform that copies objects from one image and pastes them onto another.    
-            
-        Args:    
-            p (float): Probability of applying the transform    
-            blend (bool): Whether to blend the pasted objects with the target image    
-            sigma (float): Sigma for Gaussian blending if blend=True    
-            min_area (float): Minimum normalized area for an object to be considered for copying    
-            rare_class_ids (list): List of category IDs that have fewer samples to prioritize  
-            small_object_threshold (float): Area threshold below which objects are considered "small"  
-        """    
-        super().__init__()    
-        self.p = p    
-        self.blend = blend    
-        self.sigma = sigma    
-        self.min_area = min_area    
-        self.rare_class_ids = set(rare_class_ids or [])  
-        self.small_object_threshold = small_object_threshold
+@register()  
+class CopyPaste(T.Transform):  
+    _transformed_types = (PIL.Image.Image, BoundingBoxes, Image)  
       
-    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:    
+    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0,   
+                 rare_class_ids=None, small_object_threshold=0.05) -> None:  
+        super().__init__()  
+        self.p = p  
+        self.blend = blend  
+        self.sigma = sigma  
+        self.min_area = min_area  
+        self.rare_class_ids = set(rare_class_ids or [])  
+        self.small_object_threshold = small_object_threshold  
+        self._source_cache = []  # Cache for source objects  
+      
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:  
         apply = torch.rand(1) < self.p  
-        
-        # Extract both labels and bounding box areas  
+          
+        # Extract labels and boxes  
         labels = None  
         boxes = None  
         for inp in flat_inputs:  
@@ -201,39 +191,183 @@ class CopyPaste(T.Transform):
                 boxes = inp  
                 labels = getattr(inp, 'labels', None)  
                 break  
-        
+          
         return {  
             "apply": apply,  
             "labels": labels,  
             "boxes": boxes,  
             "prioritize_rare_classes": len(self.rare_class_ids) > 0,  
             "prioritize_small_objects": self.small_object_threshold > 0  
-        }
+        }  
       
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
-        if not params["apply"]:  
-            return inpt  
+    def _select_objects_to_copy(self, image, boxes, labels, params):  
+        """Select objects based on rare class and small object criteria"""  
+        if boxes is None or len(boxes) == 0:  
+            return [], [], []  
+          
+        # Calculate normalized areas  
+        h, w = image.shape[-2:]  
+        box_areas = ((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])) / (h * w)  
+          
+        # Create selection weights  
+        weights = torch.ones(len(boxes))  
+          
+        if params["prioritize_rare_classes"] and labels is not None:  
+            for i, label in enumerate(labels):  
+                if label.item() in self.rare_class_ids:  
+                    weights[i] *= 3.0  # Boost rare classes  
+          
+        if params["prioritize_small_objects"]:  
+            small_mask = box_areas < self.small_object_threshold  
+            weights[small_mask] *= 2.0  # Boost small objects  
+          
+        # Filter by minimum area  
+        valid_mask = box_areas >= self.min_area  
+        if not valid_mask.any():  
+            return [], [], []  
+          
+        valid_boxes = boxes[valid_mask]  
+        valid_labels = labels[valid_mask] if labels is not None else None  
+        valid_weights = weights[valid_mask]  
+          
+        # Select objects to copy  
+        num_to_copy = min(len(valid_boxes), torch.randint(1, len(valid_boxes) + 1, (1,)).item())  
+        if len(valid_weights) > 0:  
+            selected_indices = torch.multinomial(valid_weights, num_to_copy, replacement=False)  
+            return valid_boxes[selected_indices], valid_labels[selected_indices] if valid_labels is not None else None, selected_indices  
+          
+        return [], [], []  
+      
+    def _extract_object_patches(self, image, boxes):  
+        """Extract object patches from image"""  
+        patches = []  
+        masks = []  
+          
+        for box in boxes:  
+            x1, y1, x2, y2 = box.int()  
+            x1, y1 = max(0, x1), max(0, y1)  
+            x2, y2 = min(image.shape[-1], x2), min(image.shape[-2], y2)  
               
-        # Implementation depends on input type  
-        if isinstance(inpt, (PIL.Image.Image, Image)):  
-            # Handle image transformation  
-            return self._transform_image(inpt, params)  
-        elif isinstance(inpt, BoundingBoxes):  
-            # Handle bounding box transformation  
-            return self._transform_boxes(inpt, params)  
-        return inpt  
+            if x2 > x1 and y2 > y1:  
+                patch = image[..., y1:y2, x1:x2].clone()  
+                  
+                # Create mask for the object  
+                mask = torch.ones((y2-y1, x2-x1), dtype=torch.float32)  
+                  
+                patches.append(patch)  
+                masks.append(mask)  
+          
+        return patches, masks  
+      
+    def _paste_objects(self, target_image, patches, masks, target_boxes):  
+        """Paste objects onto target image"""  
+        if len(patches) == 0:  
+            return target_image  
+          
+        result_image = target_image.clone()  
+        h, w = target_image.shape[-2:]  
+          
+        for patch, mask, box in zip(patches, masks, target_boxes):  
+            # Generate random position for pasting  
+            patch_h, patch_w = patch.shape[-2:]  
+              
+            # Ensure paste position is within image bounds  
+            max_x = max(0, w - patch_w)  
+            max_y = max(0, h - patch_h)  
+              
+            if max_x <= 0 or max_y <= 0:  
+                continue  
+                  
+            paste_x = torch.randint(0, max_x + 1, (1,)).item()  
+            paste_y = torch.randint(0, max_y + 1, (1,)).item()  
+              
+            # Paste the object  
+            if self.blend:  
+                # Apply Gaussian blending  
+                from scipy.ndimage import gaussian_filter  
+                import numpy as np  
+                  
+                mask_np = mask.numpy()  
+                blurred_mask = torch.from_numpy(gaussian_filter(mask_np, sigma=self.sigma))  
+                blurred_mask = blurred_mask.unsqueeze(0) if len(patch.shape) == 3 else blurred_mask  
+                  
+                # Blend the patch  
+                target_region = result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w]  
+                blended = patch * blurred_mask + target_region * (1 - blurred_mask)  
+                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = blended  
+            else:  
+                # Direct paste  
+                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = patch  
+          
+        return result_image  
       
     def _transform_image(self, image, params):  
-        # Your existing image transformation logic  
-        # Access params["prioritize_rare_classes"] and params["prioritize_small_objects"]  
-        # to implement different selection strategies  
-        return image  
-  
+        """Transform image by copying and pasting objects"""  
+        if not params["apply"] or params["boxes"] is None:  
+            return image  
+          
+        # Select objects to copy  
+        selected_boxes, selected_labels, _ = self._select_objects_to_copy(  
+            image, params["boxes"], params["labels"], params  
+        )  
+          
+        if len(selected_boxes) == 0:  
+            return image  
+          
+        # Extract patches from selected objects  
+        patches, masks = self._extract_object_patches(image, selected_boxes)  
+          
+        # Paste objects at random locations  
+        result_image = self._paste_objects(image, patches, masks, selected_boxes)  
+          
+        return result_image  
+      
     def _transform_boxes(self, boxes, params):  
-        # Your existing box transformation logic  
-        # Separate handling for:  
-        # 1. Small objects (based on area < self.small_object_threshold)  
-        # 2. Rare classes (based on labels in self.rare_class_ids)  
+        """Transform bounding boxes by adding pasted object boxes"""  
+        if not params["apply"] or params["labels"] is None:  
+            return boxes  
+          
+        # Select objects to copy  
+        selected_boxes, selected_labels, _ = self._select_objects_to_copy(  
+            None, boxes, params["labels"], params  
+        )  
+          
+        if len(selected_boxes) == 0:  
+            return boxes  
+          
+        # Generate new box positions for pasted objects  
+        h, w = boxes.canvas_size  
+        new_boxes = []  
+        new_labels = []  
+          
+        for box, label in zip(selected_boxes, selected_labels):  
+            box_w = box[2] - box[0]  
+            box_h = box[3] - box[1]  
+              
+            # Random position within image bounds  
+            max_x = max(0, w - box_w)  
+            max_y = max(0, h - box_h)  
+              
+            if max_x > 0 and max_y > 0:  
+                new_x = torch.randint(0, int(max_x) + 1, (1,)).item()  
+                new_y = torch.randint(0, int(max_y) + 1, (1,)).item()  
+                  
+                new_box = torch.tensor([new_x, new_y, new_x + box_w, new_y + box_h])  
+                new_boxes.append(new_box)  
+                new_labels.append(label)  
+          
+        if len(new_boxes) > 0:  
+            # Combine original and new boxes  
+            all_boxes = torch.cat([boxes, torch.stack(new_boxes)])  
+            all_labels = torch.cat([params["labels"], torch.stack(new_labels)])  
+              
+            # Create new BoundingBoxes object  
+            from torchvision.tv_tensors import BoundingBoxes  
+            result_boxes = BoundingBoxes(all_boxes, format=boxes.format, canvas_size=boxes.canvas_size)  
+            result_boxes.labels = all_labels  
+              
+            return result_boxes  
+          
         return boxes
       
     def forward(self, *inputs: Any) -> Any:  
