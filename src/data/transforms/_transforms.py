@@ -12,6 +12,7 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
+import torch.nn.functional as NF
 import json
 import random
 import math
@@ -271,7 +272,7 @@ class CopyPaste(T.Transform):
         
         # Apply convolution for blurring
         padding = kernel_size // 2
-        blurred = F.conv2d(mask, kernel, padding=padding)
+        blurred = NF.conv2d(mask, kernel, padding=padding)
         
         # Restore original shape
         if len(original_shape) == 2:
