@@ -3,7 +3,7 @@ Copied from RT-DETR (https://github.com/lyuwenyu/RT-DETR)
 Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import PIL
 import PIL.Image
@@ -14,6 +14,7 @@ import torchvision.transforms.v2 as T
 import torchvision.transforms.v2.functional as F
 import json
 import random
+import math
 import os
 
 from ...core import register
@@ -165,423 +166,384 @@ class ConvertPILImage(T.Transform):
 
         return inpt
 
-@register()  
-class CopyPaste(T.Transform):  
-    _transformed_types = (PIL.Image.Image, BoundingBoxes, Image)  
-      
-    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0,   
-                 rare_class_ids=None, small_object_threshold=0.05) -> None:  
-        super().__init__()  
-        self.p = p  
-        self.blend = blend  
-        self.sigma = sigma  
-        self.min_area = min_area  
-        self.rare_class_ids = set(rare_class_ids or [])  
-        self.small_object_threshold = small_object_threshold  
-        self._source_cache = []  # Cache for source objects  
-      
-    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:  
-        apply = torch.rand(1) < self.p  
-          
-        # Extract labels and boxes  
-        labels = None  
-        boxes = None  
-        for inp in flat_inputs:  
-            if isinstance(inp, BoundingBoxes):  
-                boxes = inp  
-                labels = getattr(inp, 'labels', None)  
-                break  
-          
-        return {  
-            "apply": apply,  
-            "labels": labels,  
-            "boxes": boxes,  
-            "prioritize_rare_classes": len(self.rare_class_ids) > 0,  
-            "prioritize_small_objects": self.small_object_threshold > 0  
-        }  
-      
-    def _select_objects_to_copy(self, image, boxes, labels, params):  
-        """Select objects based on rare class and small object criteria"""  
-        if boxes is None or len(boxes) == 0:  
-            return [], [], []  
-          
-        # Calculate normalized areas  
-        h, w = image.shape[-2:]  
-        box_areas = ((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])) / (h * w)  
-          
-        # Create selection weights  
-        weights = torch.ones(len(boxes))  
-          
-        if params["prioritize_rare_classes"] and labels is not None:  
-            for i, label in enumerate(labels):  
-                if label.item() in self.rare_class_ids:  
-                    weights[i] *= 3.0  # Boost rare classes  
-          
-        if params["prioritize_small_objects"]:  
-            small_mask = box_areas < self.small_object_threshold  
-            weights[small_mask] *= 2.0  # Boost small objects  
-          
-        # Filter by minimum area  
-        valid_mask = box_areas >= self.min_area  
-        if not valid_mask.any():  
-            return [], [], []  
-          
-        valid_boxes = boxes[valid_mask]  
-        valid_labels = labels[valid_mask] if labels is not None else None  
-        valid_weights = weights[valid_mask]  
-          
-        # Select objects to copy  
-        num_to_copy = min(len(valid_boxes), torch.randint(1, len(valid_boxes) + 1, (1,)).item())  
-        if len(valid_weights) > 0:  
-            selected_indices = torch.multinomial(valid_weights, num_to_copy, replacement=False)  
-            return valid_boxes[selected_indices], valid_labels[selected_indices] if valid_labels is not None else None, selected_indices  
-          
-        return [], [], []  
-      
-    def _extract_object_patches(self, image, boxes):  
-        """Extract object patches from image"""  
-        patches = []  
-        masks = []  
-          
-        for box in boxes:  
-            x1, y1, x2, y2 = box.int()  
-            x1, y1 = max(0, x1), max(0, y1)  
-            x2, y2 = min(image.shape[-1], x2), min(image.shape[-2], y2)  
-              
-            if x2 > x1 and y2 > y1:  
-                patch = image[..., y1:y2, x1:x2].clone()  
-                  
-                # Create mask for the object  
-                mask = torch.ones((y2-y1, x2-x1), dtype=torch.float32)  
-                  
-                patches.append(patch)  
-                masks.append(mask)  
-          
-        return patches, masks  
-      
-    def _paste_objects(self, target_image, patches, masks, target_boxes):  
-        """Paste objects onto target image"""  
-        if len(patches) == 0:  
-            return target_image  
-          
-        result_image = target_image.clone()  
-        h, w = target_image.shape[-2:]  
-          
-        for patch, mask, box in zip(patches, masks, target_boxes):  
-            # Generate random position for pasting  
-            patch_h, patch_w = patch.shape[-2:]  
-              
-            # Ensure paste position is within image bounds  
-            max_x = max(0, w - patch_w)  
-            max_y = max(0, h - patch_h)  
-              
-            if max_x <= 0 or max_y <= 0:  
-                continue  
-                  
-            paste_x = torch.randint(0, max_x + 1, (1,)).item()  
-            paste_y = torch.randint(0, max_y + 1, (1,)).item()  
-              
-            # Paste the object  
-            if self.blend:  
-                # Apply Gaussian blending  
-                from scipy.ndimage import gaussian_filter  
-                import numpy as np  
-                  
-                mask_np = mask.numpy()  
-                blurred_mask = torch.from_numpy(gaussian_filter(mask_np, sigma=self.sigma))  
-                blurred_mask = blurred_mask.unsqueeze(0) if len(patch.shape) == 3 else blurred_mask  
-                  
-                # Blend the patch  
-                target_region = result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w]  
-                blended = patch * blurred_mask + target_region * (1 - blurred_mask)  
-                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = blended  
-            else:  
-                # Direct paste  
-                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = patch  
-          
-        return result_image  
-      
-    def _transform_image(self, image, params):  
-        """Transform image by copying and pasting objects"""  
-        if not params["apply"] or params["boxes"] is None:  
-            return image  
-          
-        # Select objects to copy  
-        selected_boxes, selected_labels, _ = self._select_objects_to_copy(  
-            image, params["boxes"], params["labels"], params  
-        )  
-          
-        if len(selected_boxes) == 0:  
-            return image  
-          
-        # Extract patches from selected objects  
-        patches, masks = self._extract_object_patches(image, selected_boxes)  
-          
-        # Paste objects at random locations  
-        result_image = self._paste_objects(image, patches, masks, selected_boxes)  
-          
-        return result_image  
-      
-    def _transform_boxes(self, boxes, params):  
-        """Transform bounding boxes by adding pasted object boxes"""  
-        if not params["apply"] or params["labels"] is None:  
-            return boxes  
-          
-        # Select objects to copy  
-        selected_boxes, selected_labels, _ = self._select_objects_to_copy(  
-            None, boxes, params["labels"], params  
-        )  
-          
-        if len(selected_boxes) == 0:  
-            return boxes  
-          
-        # Generate new box positions for pasted objects  
-        h, w = boxes.canvas_size  
-        new_boxes = []  
-        new_labels = []  
-          
-        for box, label in zip(selected_boxes, selected_labels):  
-            box_w = box[2] - box[0]  
-            box_h = box[3] - box[1]  
-              
-            # Random position within image bounds  
-            max_x = max(0, w - box_w)  
-            max_y = max(0, h - box_h)  
-              
-            if max_x > 0 and max_y > 0:  
-                new_x = torch.randint(0, int(max_x) + 1, (1,)).item()  
-                new_y = torch.randint(0, int(max_y) + 1, (1,)).item()  
-                  
-                new_box = torch.tensor([new_x, new_y, new_x + box_w, new_y + box_h])  
-                new_boxes.append(new_box)  
-                new_labels.append(label)  
-          
-        if len(new_boxes) > 0:  
-            # Combine original and new boxes  
-            all_boxes = torch.cat([boxes, torch.stack(new_boxes)])  
-            all_labels = torch.cat([params["labels"], torch.stack(new_labels)])  
-              
-            # Create new BoundingBoxes object  
-            from torchvision.tv_tensors import BoundingBoxes  
-            result_boxes = BoundingBoxes(all_boxes, format=boxes.format, canvas_size=boxes.canvas_size)  
-            result_boxes.labels = all_labels  
-              
-            return result_boxes  
-          
+@register()
+class CopyPaste(T.Transform):
+    _transformed_types = (
+        PIL.Image.Image,
+        Image,
+        BoundingBoxes,
+    )
+
+    def __init__(
+        self,
+        p: float = 0.5,
+        blend: bool = True,
+        sigma: float = 1.0,
+        min_area: float = 0.0,
+        category_ids: Optional[List[int]] = None,
+        small_object_threshold: float = 0.05,
+        max_paste_objects: int = 3,
+        paste_all_matching: bool = True,
+    ) -> None:
+        """
+        CopyPaste augmentation for object detection.
+        
+        Args:
+            p: Probability of applying the transform
+            blend: Whether to use Gaussian blending for smooth pasting
+            sigma: Standard deviation for Gaussian blending
+            min_area: Minimum normalized area threshold for objects to be copied
+            category_ids: List of category IDs to prioritize for copying
+            small_object_threshold: Normalized area threshold to consider objects as "small"
+            max_paste_objects: Maximum number of objects to paste (ignored if paste_all_matching=True)
+            paste_all_matching: If True, paste all objects matching the criteria
+        """
+        super().__init__()
+        self.p = p
+        self.blend = blend
+        self.sigma = sigma
+        self.min_area = min_area
+        self.category_ids = set(category_ids or [])
+        self.small_object_threshold = small_object_threshold
+        self.max_paste_objects = max_paste_objects
+        self.paste_all_matching = paste_all_matching
+
+    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:
+        apply = torch.rand(1) < self.p
+        
+        # Extract image, boxes, and labels from inputs
+        image = None
+        boxes = None
+        labels = None
+        
+        for inp in flat_inputs:
+            if isinstance(inp, (PIL.Image.Image, Image)):
+                image = inp
+            elif isinstance(inp, BoundingBoxes):
+                boxes = inp
+                # Labels might be stored as an attribute
+                labels = getattr(inp, 'labels', None)
+            elif isinstance(inp, dict):
+                # Handle dict format
+                if 'boxes' in inp:
+                    boxes = inp['boxes']
+                if 'labels' in inp:
+                    labels = inp['labels']
+                if 'image' in inp:
+                    image = inp['image']
+        
+        return {
+            "apply": apply,
+            "image": image,
+            "boxes": boxes,
+            "labels": labels,
+        }
+
+    def _create_gaussian_kernel(self, kernel_size: int, sigma: float) -> torch.Tensor:
+        """Create a 2D Gaussian kernel using PyTorch"""
+        coords = torch.arange(kernel_size, dtype=torch.float32)
+        coords -= kernel_size // 2
+        
+        y, x = torch.meshgrid(coords, coords, indexing='ij')
+        gaussian = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
+        gaussian = gaussian / gaussian.sum()
+        
+        return gaussian
+
+    def _apply_gaussian_blur(self, mask: torch.Tensor, sigma: float) -> torch.Tensor:
+        """Apply Gaussian blur to mask using PyTorch operations"""
+        if sigma <= 0:
+            return mask
+        
+        # Ensure mask is a tensor
+        if not isinstance(mask, torch.Tensor):
+            mask = torch.tensor(mask, dtype=torch.float32)
+        
+        # Add batch and channel dimensions if needed
+        original_shape = mask.shape
+        if len(mask.shape) == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+        
+        # Create Gaussian kernel
+        kernel_size = int(2 * math.ceil(2 * sigma) + 1)
+        kernel = self._create_gaussian_kernel(kernel_size, sigma)
+        kernel = kernel.unsqueeze(0).unsqueeze(0).to(mask.device)  # [1, 1, K, K]
+        
+        # Apply convolution for blurring
+        padding = kernel_size // 2
+        blurred = F.conv2d(mask, kernel, padding=padding)
+        
+        # Restore original shape
+        if len(original_shape) == 2:
+            blurred = blurred.squeeze(0).squeeze(0)
+        
+        return blurred
+
+    def _select_objects_to_copy(self, image_size: Tuple[int, int], boxes: torch.Tensor, 
+                               labels: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Select objects based on category ID and small object criteria"""
+        if boxes is None or len(boxes) == 0:
+            return torch.empty((0, 4)), torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+        
+        # Ensure tensor format
+        if not isinstance(boxes, torch.Tensor):
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+        if labels is not None and not isinstance(labels, torch.Tensor):
+            labels = torch.tensor(labels, dtype=torch.long)
+        
+        h, w = image_size
+        
+        # Calculate normalized areas
+        box_areas = ((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])) / (h * w)
+        
+        # Create selection mask based on criteria
+        selection_mask = torch.ones(len(boxes), dtype=torch.bool)
+        
+        # Filter by minimum area
+        selection_mask &= (box_areas >= self.min_area)
+        
+        # Filter by small object threshold
+        if self.small_object_threshold > 0:
+            selection_mask &= (box_areas < self.small_object_threshold)
+        
+        # Filter by category IDs
+        if len(self.category_ids) > 0 and labels is not None:
+            category_mask = torch.zeros(len(labels), dtype=torch.bool)
+            for cat_id in self.category_ids:
+                category_mask |= (labels == cat_id)
+            selection_mask &= category_mask
+        
+        # Get valid objects
+        if not selection_mask.any():
+            return torch.empty((0, 4)), torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+        
+        valid_boxes = boxes[selection_mask]
+        valid_labels = labels[selection_mask] if labels is not None else torch.arange(selection_mask.sum())
+        valid_indices = torch.where(selection_mask)[0]
+        
+        # Select objects to copy
+        if self.paste_all_matching:
+            # Copy all matching objects
+            return valid_boxes, valid_labels, valid_indices
+        else:
+            # Copy up to max_paste_objects
+            num_to_copy = min(len(valid_boxes), self.max_paste_objects)
+            if num_to_copy > 0:
+                selected_idx = torch.randperm(len(valid_boxes))[:num_to_copy]
+                return valid_boxes[selected_idx], valid_labels[selected_idx], valid_indices[selected_idx]
+        
+        return torch.empty((0, 4)), torch.empty(0, dtype=torch.long), torch.empty(0, dtype=torch.long)
+
+    def _extract_object_patches(self, image: torch.Tensor, boxes: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """Extract object patches and masks from image"""
+        patches = []
+        masks = []
+        
+        # Ensure image is in correct format [C, H, W]
+        if len(image.shape) == 4:
+            image = image.squeeze(0)
+        
+        for box in boxes:
+            x1, y1, x2, y2 = box.int()
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(image.shape[-1], x2), min(image.shape[-2], y2)
+            
+            if x2 > x1 and y2 > y1:
+                patch = image[..., y1:y2, x1:x2].clone()
+                mask = torch.ones((y2-y1, x2-x1), dtype=torch.float32, device=image.device)
+                
+                patches.append(patch)
+                masks.append(mask)
+        
+        return patches, masks
+
+    def _generate_paste_positions(self, image_shape: torch.Size, patches: List[torch.Tensor]) -> List[Tuple[int, int]]:
+        """Generate valid paste positions avoiding overlaps with original objects"""
+        h, w = image_shape[-2:]
+        positions = []
+        
+        for patch in patches:
+            patch_h, patch_w = patch.shape[-2:]
+            
+            # Calculate valid paste region
+            max_x = max(1, w - patch_w)
+            max_y = max(1, h - patch_h)
+            
+            if max_x > 0 and max_y > 0:
+                # Generate random position
+                paste_x = random.randint(0, max_x - 1)
+                paste_y = random.randint(0, max_y - 1)
+                positions.append((paste_x, paste_y))
+            else:
+                positions.append((0, 0))  # Fallback position
+        
+        return positions
+
+    def _paste_objects(self, target_image: torch.Tensor, patches: List[torch.Tensor], 
+                      masks: List[torch.Tensor], positions: List[Tuple[int, int]]) -> torch.Tensor:
+        """Paste objects onto target image with optional blending"""
+        if len(patches) == 0:
+            return target_image
+        
+        result_image = target_image.clone()
+        
+        for patch, mask, (paste_x, paste_y) in zip(patches, masks, positions):
+            patch_h, patch_w = patch.shape[-2:]
+            
+            # Ensure paste position is within bounds
+            if paste_x + patch_w > target_image.shape[-1] or paste_y + patch_h > target_image.shape[-2]:
+                continue
+            
+            if self.blend and self.sigma > 0:
+                # Apply Gaussian blending
+                blurred_mask = self._apply_gaussian_blur(mask, self.sigma)
+                blurred_mask = blurred_mask.to(target_image.device)
+                
+                # Expand mask dimensions to match patch
+                if len(patch.shape) == 3 and len(blurred_mask.shape) == 2:
+                    blurred_mask = blurred_mask.unsqueeze(0).expand_as(patch)
+                
+                # Blend the patch
+                target_region = result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w]
+                blended = patch * blurred_mask + target_region * (1 - blurred_mask)
+                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = blended
+            else:
+                # Direct paste
+                result_image[..., paste_y:paste_y+patch_h, paste_x:paste_x+patch_w] = patch
+        
+        return result_image
+
+    def _transform_image(self, image: Any, params: Dict[str, Any]) -> Any:
+        """Transform image by copying and pasting objects"""
+        if not params["apply"] or params["boxes"] is None or len(params["boxes"]) == 0:
+            return image
+        
+        # Convert image to tensor if needed
+        if isinstance(image, PIL.Image.Image):
+            image_tensor = F.pil_to_tensor(image).float() / 255.0
+        elif isinstance(image, Image):
+            image_tensor = image.as_subclass(torch.Tensor)
+        else:
+            image_tensor = image
+        
+        # Get image dimensions
+        if len(image_tensor.shape) >= 2:
+            image_size = image_tensor.shape[-2:]
+        else:
+            return image
+        
+        # Select objects to copy
+        selected_boxes, selected_labels, _ = self._select_objects_to_copy(
+            image_size, params["boxes"], params["labels"]
+        )
+        
+        if len(selected_boxes) == 0:
+            return image
+        
+        # Extract patches from selected objects
+        patches, masks = self._extract_object_patches(image_tensor, selected_boxes)
+        
+        if len(patches) == 0:
+            return image
+        
+        # Generate paste positions
+        paste_positions = self._generate_paste_positions(image_tensor.shape, patches)
+        
+        # Paste objects at random locations
+        result_tensor = self._paste_objects(image_tensor, patches, masks, paste_positions)
+        
+        # Convert back to original format
+        if isinstance(image, PIL.Image.Image):
+            result_tensor = (result_tensor * 255).clamp(0, 255).byte()
+            return F.to_pil_image(result_tensor)
+        elif isinstance(image, Image):
+            return Image(result_tensor)
+        else:
+            return result_tensor
+
+    def _transform_boxes(self, boxes: BoundingBoxes, params: Dict[str, Any]) -> BoundingBoxes:
+        """Transform bounding boxes by adding pasted object boxes"""
+        if not params["apply"] or params["labels"] is None or len(params["boxes"]) == 0:
+            return boxes
+        
+        # Get spatial size
+        spatial_size = getattr(boxes, _boxes_keys[1])
+        h, w = spatial_size
+        
+        # Select objects to copy
+        selected_boxes, selected_labels, _ = self._select_objects_to_copy(
+            (h, w), boxes, params["labels"]
+        )
+        
+        if len(selected_boxes) == 0:
+            return boxes
+        
+        # Generate new box positions for pasted objects
+        new_boxes = []
+        new_labels = []
+        
+        for box, label in zip(selected_boxes, selected_labels):
+            box_w = box[2] - box[0]
+            box_h = box[3] - box[1]
+            
+            # Generate random position
+            max_x = max(1, w - box_w)
+            max_y = max(1, h - box_h)
+            
+            if max_x > 0 and max_y > 0:
+                new_x = random.randint(0, int(max_x) - 1)
+                new_y = random.randint(0, int(max_y) - 1)
+                
+                new_box = torch.tensor([new_x, new_y, new_x + box_w, new_y + box_h], 
+                                     dtype=box.dtype, device=box.device)
+                new_boxes.append(new_box)
+                new_labels.append(label)
+        
+        if len(new_boxes) > 0:
+            # Combine original and new boxes
+            all_boxes = torch.cat([boxes, torch.stack(new_boxes)])
+            all_labels = torch.cat([params["labels"], torch.stack(new_labels)])
+            
+            # Create new BoundingBoxes object
+            result_boxes = BoundingBoxes(all_boxes, format=boxes.format, canvas_size=spatial_size)
+            result_boxes.labels = all_labels
+            
+            return result_boxes
+        
         return boxes
-      
-    def forward(self, *inputs: Any) -> Any:  
-        # Get the first input to determine spatial size for params  
-        flat_inputs = []  
-        for i in inputs:  
-            if isinstance(i, (list, tuple)):  
-                flat_inputs.extend(list(i))  
-            else:  
-                flat_inputs.append(i)  
-                  
-        params = self._get_params(flat_inputs)  
-          
-        # If not applying, return inputs unchanged  
-        if not params["apply"]:  
-            return inputs if len(inputs) > 1 else inputs[0]  
-          
-        # Apply transform to each input  
-        transformed = []  
-        for i in inputs:  
-            if isinstance(i, (list, tuple)):  
-                transformed.append(type(i)(self._transform(elem, params) for elem in i))  
-            else:  
-                transformed.append(self._transform(i, params))  
-                  
+
+    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:
+        """Transform individual input based on its type"""
+        if isinstance(inpt, (PIL.Image.Image, Image)):
+            return self._transform_image(inpt, params)
+        elif isinstance(inpt, BoundingBoxes):
+            return self._transform_boxes(inpt, params)
+        else:
+            return inpt
+
+    def forward(self, *inputs: Any) -> Any:
+        """Main forward pass following DFINE's transform pattern"""
+        # Flatten inputs
+        flat_inputs = []
+        for inp in inputs:
+            if isinstance(inp, (list, tuple)):
+                flat_inputs.extend(inp)
+            else:
+                flat_inputs.append(inp)
+        
+        # Get parameters
+        params = self._get_params(flat_inputs)
+        
+        # If not applying, return inputs unchanged
+        if not params["apply"]:
+            return inputs if len(inputs) > 1 else inputs[0]
+        
+        # Apply transform to each input
+        transformed = []
+        for inp in inputs:
+            if isinstance(inp, (list, tuple)):
+                transformed.append(type(inp)(self._transform(item, params) for item in inp))
+            else:
+                transformed.append(self._transform(inp, params))
+        
         return transformed if len(transformed) > 1 else transformed[0]
-
-@register()  
-class MixUp(T.Transform):  
-    def __init__(self, alpha=0.2, p=0.2):  
-        super().__init__()  
-        self.alpha = alpha  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        # MixUp implementation would go here  
-        # This is a complex transform that requires multiple images  
-        # For a full implementation, we would need to modify the dataloader  
-        return inpt
-
-@register()  
-class RandomScale(T.Transform):  
-    def __init__(self, scale=0.3, p=0.5):  
-        super().__init__()  
-        self.scale = scale  
-        self.p = p  
-      
-    def _transform(self, inpt, params):  
-        if random.random() < self.p:  
-            scale_factor = random.uniform(1 - self.scale, 1 + self.scale)  
-              
-            # Apply scaling  
-            inpt = F.affine(inpt, angle=0, translate=(0, 0), scale=scale_factor, shear=0)  
-          
-        return inpt 
-
-@register()    
-class RandomZoomIn(T.Transform):    
-    _transformed_types = (    
-        PIL.Image.Image,    
-        Image,    
-        Video,    
-        Mask,    
-        BoundingBoxes,    
-    )    
-    
-    def __init__(    
-        self,    
-        min_scale: float = 1.1,    
-        max_scale: float = 1.5,    
-        min_size_threshold: int = 32,    
-        target_size_threshold: int = 64,    
-        p: float = 0.5,    
-    ) -> None:    
-        """    
-        RandomZoomIn transform to enhance detection of small objects.    
-            
-        Args:    
-            min_scale: Minimum zoom scale factor    
-            max_scale: Maximum zoom scale factor    
-            min_size_threshold: Objects smaller than this will trigger zoom-in    
-            target_size_threshold: Target size to scale small objects to    
-            p: Probability of applying this transform    
-        """    
-        super().__init__()    
-        self.min_scale = min_scale    
-        self.max_scale = max_scale    
-        self.min_size_threshold = min_size_threshold    
-        self.target_size_threshold = target_size_threshold    
-        self.p = p    
-    
-    def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:    
-        # Find image and boxes in inputs    
-        image = None    
-        boxes = None    
-            
-        for x in flat_inputs:    
-            if isinstance(x, (PIL.Image.Image, Image)):    
-                image = x    
-            elif isinstance(x, BoundingBoxes):    
-                boxes = x    
-            
-        if image is None or boxes is None or torch.rand(1) >= self.p:    
-            return {"zoom_in": False}    
-                
-        # Get image dimensions  
-        if isinstance(image, (PIL.Image.Image, Image)):  
-            img_w, img_h = image.size  
-        else:  
-            # For tensor images  
-            img_h, img_w = image.shape[-2:]  
-            
-        # Check if there are small objects    
-        box_sizes = boxes.tensor[:, 2:] - boxes.tensor[:, :2]  # width, height    
-        box_areas = box_sizes[:, 0] * box_sizes[:, 1]    
-            
-        # Find small objects    
-        small_obj_mask = box_areas < (self.min_size_threshold ** 2)    
-            
-        if not torch.any(small_obj_mask):    
-            return {"zoom_in": False}    
-                
-        # Select a random small object to focus on    
-        small_boxes = boxes.tensor[small_obj_mask]    
-        target_idx = torch.randint(0, small_boxes.size(0), (1,)).item()    
-        target_box = small_boxes[target_idx]    
-            
-        # Calculate center of the box    
-        center_x = (target_box[0] + target_box[2]) / 2    
-        center_y = (target_box[1] + target_box[3]) / 2    
-            
-        # Calculate box size    
-        box_w = target_box[2] - target_box[0]    
-        box_h = target_box[3] - target_box[1]    
-            
-        # Calculate scale factor to reach target size    
-        w_scale = self.target_size_threshold / box_w    
-        h_scale = self.target_size_threshold / box_h    
-        scale = min(max(w_scale, h_scale), self.max_scale)    
-        scale = max(scale, self.min_scale)    
-            
-        # Calculate new crop size    
-        new_w = int(img_w / scale)    
-        new_h = int(img_h / scale)    
-            
-        # Calculate crop coordinates    
-        left = max(0, int(center_x - new_w / 2))    
-        top = max(0, int(center_y - new_h / 2))    
-            
-        # Adjust if crop goes out of bounds    
-        if left + new_w > img_w:    
-            left = img_w - new_w    
-        if top + new_h > img_h:    
-            top = img_h - new_h    
-                
-        return {    
-            "zoom_in": True,    
-            "crop": [left, top, left + new_w, top + new_h],    
-            "scale": scale    
-        }    
-    
-    def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:    
-        if not params["zoom_in"]:    
-            return inpt    
-                
-        if isinstance(inpt, (PIL.Image.Image, Image)):    
-            # Crop and resize for images    
-            crop = params["crop"]  
-            # Get original size  
-            if isinstance(inpt, (PIL.Image.Image, Image)):  
-                size = inpt.size  
-            else:  
-                size = (inpt.shape[-1], inpt.shape[-2])  # w, h  
-                  
-            return F.resized_crop(    
-                inpt,     
-                top=crop[1],     
-                left=crop[0],     
-                height=crop[3]-crop[1],     
-                width=crop[2]-crop[0],     
-                size=size  
-            )    
-        elif isinstance(inpt, BoundingBoxes):    
-            # Adjust bounding boxes    
-            crop = params["crop"]    
-            boxes = inpt.tensor.clone()    
-                
-            # Shift boxes based on crop    
-            boxes[:, 0] = (boxes[:, 0] - crop[0]) * params["scale"]    
-            boxes[:, 1] = (boxes[:, 1] - crop[1]) * params["scale"]    
-            boxes[:, 2] = (boxes[:, 2] - crop[0]) * params["scale"]    
-            boxes[:, 3] = (boxes[:, 3] - crop[1]) * params["scale"]    
-                
-            # Clip to image boundaries    
-            img_size = getattr(inpt, _boxes_keys[1])    
-            boxes[:, 0].clamp_(min=0, max=img_size[1])    
-            boxes[:, 1].clamp_(min=0, max=img_size[0])    
-            boxes[:, 2].clamp_(min=0, max=img_size[1])    
-            boxes[:, 3].clamp_(min=0, max=img_size[0])    
-                
-            return convert_to_tv_tensor(    
-                boxes, key="boxes", box_format=inpt.format.value, spatial_size=img_size    
-            )    
-        elif isinstance(inpt, Mask):    
-            # Crop and resize for masks    
-            crop = params["crop"]    
-            mask = F.crop(inpt, top=crop[1], left=crop[0], height=crop[3]-crop[1], width=crop[2]-crop[0])  
-              
-            # Get original size  
-            if isinstance(inpt, (PIL.Image.Image, Image)):  
-                size = inpt.size  
-            else:  
-                size = (inpt.shape[-1], inpt.shape[-2])  # w, h  
-                  
-            return F.resize(mask, size=size, interpolation=T.InterpolationMode.NEAREST)    
-                
-        return inpt
