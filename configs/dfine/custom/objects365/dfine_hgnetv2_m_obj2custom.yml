@@ -3,7 +3,7 @@ __include__: [
   '../../../runtime.yml',
   '../../include/dataloader.yml',
   '../../include/optimizer.yml',
-  '../../include/dfine_hgnetv2_hsfpn.yml',
+  '../../include/dfine_hgnetv2.yml',
 ]
 
 output_dir: ./output/dfine_hgnetv2_m_obj2custom
@@ -23,18 +23,10 @@ DFINETransformer:
   num_layers: 4  # 5 6
   eval_idx: -1  # -2 -3
 
-HybridHSFPNEncoder:
-  in_channels: [384, 768, 1536]  # Already correct  
-  feat_strides: [8, 16, 32]      # Add this  
-  hidden_dim: 256                # Already correct  
-  use_encoder_idx: [2]           # Add this  
-  dim_feedforward: 1024          # Update this  
-  dropout: 0.0                   # Add this  
-  enc_act: 'gelu'                # Add this  
-  num_encoder_layers: 1          # Add this  
-  pe_temperature: 10000          # Add this  
-  eval_spatial_size: [320, 320]  # Add this to match your input size  
-  use_hsfpn: True                # Add this
+HybridEncoder:
+  in_channels: [384, 768, 1536]
+  hidden_dim: 256
+  depth_mult: 0.67
 
 optimizer:
   type: AdamW
