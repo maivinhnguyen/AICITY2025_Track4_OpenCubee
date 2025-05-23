@@ -169,7 +169,8 @@ class ConvertPILImage(T.Transform):
 class CopyPaste(T.Transform):    
     _transformed_types = (PIL.Image.Image, BoundingBoxes, Image)    
         
-    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0, rare_class_ids=None) -> None:    
+    def __init__(self, p=0.5, blend=True, sigma=1.0, min_area=0.0,   
+                 rare_class_ids=None, small_object_threshold=0.05) -> None:    
         """    
         CopyPaste transform that copies objects from one image and pastes them onto another.    
             
@@ -179,29 +180,34 @@ class CopyPaste(T.Transform):
             sigma (float): Sigma for Gaussian blending if blend=True    
             min_area (float): Minimum normalized area for an object to be considered for copying    
             rare_class_ids (list): List of category IDs that have fewer samples to prioritize  
+            small_object_threshold (float): Area threshold below which objects are considered "small"  
         """    
         super().__init__()    
         self.p = p    
         self.blend = blend    
         self.sigma = sigma    
         self.min_area = min_area    
-        self.rare_class_ids = set(rare_class_ids or [])
+        self.rare_class_ids = set(rare_class_ids or [])  
+        self.small_object_threshold = small_object_threshold
       
     def _get_params(self, flat_inputs: List[Any]) -> Dict[str, Any]:    
-        # Determine whether to apply the transform based on probability    
         apply = torch.rand(1) < self.p  
         
-        # Extract labels if available for rare class prioritization  
+        # Extract both labels and bounding box areas  
         labels = None  
+        boxes = None  
         for inp in flat_inputs:  
-            if isinstance(inp, BoundingBoxes) and hasattr(inp, 'labels'):  
-                labels = inp.labels  
+            if isinstance(inp, BoundingBoxes):  
+                boxes = inp  
+                labels = getattr(inp, 'labels', None)  
                 break  
         
         return {  
             "apply": apply,  
             "labels": labels,  
-            "prioritize_rare": len(self.rare_class_ids) > 0  
+            "boxes": boxes,  
+            "prioritize_rare_classes": len(self.rare_class_ids) > 0,  
+            "prioritize_small_objects": self.small_object_threshold > 0  
         }
       
     def _transform(self, inpt: Any, params: Dict[str, Any]) -> Any:  
@@ -219,14 +225,15 @@ class CopyPaste(T.Transform):
       
     def _transform_image(self, image, params):  
         # Your existing image transformation logic  
-        # Now you can access params["labels"] and params["prioritize_rare"]  
-        # to implement rare class prioritization  
+        # Access params["prioritize_rare_classes"] and params["prioritize_small_objects"]  
+        # to implement different selection strategies  
         return image  
   
     def _transform_boxes(self, boxes, params):  
-        # Your existing box transformation logic    
-        # Use params["labels"] to identify which boxes contain rare classes  
-        # Prioritize copying boxes that match self.rare_class_ids  
+        # Your existing box transformation logic  
+        # Separate handling for:  
+        # 1. Small objects (based on area < self.small_object_threshold)  
+        # 2. Rare classes (based on labels in self.rare_class_ids)  
         return boxes
       
     def forward(self, *inputs: Any) -> Any:  
